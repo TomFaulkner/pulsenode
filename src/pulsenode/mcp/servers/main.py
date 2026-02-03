@@ -9,6 +9,8 @@ from starlette.responses import PlainTextResponse
 from structlog import BoundLogger, get_logger
 
 from pulsenode.config import main_settings, mcp_server_settings
+from pulsenode.mcp.servers.llm_proxy import llm_proxy_mcp
+from pulsenode.config.settings import settings
 
 
 logger = cast("BoundLogger", get_logger(__name__).bind(service="mcp"))
@@ -28,7 +30,6 @@ class LoggingMiddleware(Middleware):
         return result
 
 
-
 auth = JWTVerifier(
     public_key=mcp_server_settings.mcp_jwt_secret.get_secret_value(),
     issuer=mcp_server_settings.mcp_jwt_issuer,
@@ -39,6 +40,11 @@ auth = JWTVerifier(
 
 mcp = FastMCP(mcp_server_settings.mcp_server_name, auth=auth)
 mcp.add_middleware(LoggingMiddleware())
+
+# Add LLM proxy server if enabled
+if settings.llm_proxy.enabled:
+    logger.info("llm_proxy_enabled", message="Adding LLM proxy server to composition")
+    mcp.mount(llm_proxy_mcp, prefix="llm")
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -60,4 +66,3 @@ async def greet(name: str, ctx: Context) -> list[str]:
 
 if __name__ == "__main__":
     mcp.run(transport="http", port=8000)
-
