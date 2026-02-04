@@ -75,7 +75,7 @@ class LLMProxyServer:
 
     def get_client(self, provider: str | None = None) -> OllamaClient | LlamaCppClient:
         """Get client for specified provider or default"""
-        provider = provider or settings.llm_proxy.provider
+        provider = provider or settings.llm_proxy.provider_default
 
         if provider not in self.clients:
             raise Exception(f"Provider {provider} not configured or not available")
@@ -93,7 +93,7 @@ class LLMProxyServer:
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Chat with LLM provider"""
         client = self.get_client(provider)
-        provider_name = provider or settings.llm_proxy.provider
+        provider_name = provider or settings.llm_proxy.provider_default
 
         # Temporarily switch model if requested
         if model and model != client.model:
@@ -154,7 +154,7 @@ class LLMProxyServer:
         result = await client.switch_model(model)
         logger.info(
             "llm_model_switched",
-            provider=provider or settings.llm_proxy.provider,
+            provider=provider or settings.llm_proxy.provider_default,
             model=model,
         )
         return result
@@ -208,7 +208,7 @@ async def llm_chat(request: LLMRequest, ctx: Context) -> str:
     """
     logger.info(
         "llm_chat_request",
-        provider=request.provider or settings.llm_proxy.provider,
+        provider=request.provider or settings.llm_proxy.provider_default,
         model=request.model or settings.llm_proxy.model,
         num_messages=len(request.messages),
     )
@@ -265,7 +265,7 @@ async def llm_generate(
     """
     logger.info(
         "llm_generate_request",
-        provider=provider or settings.llm_proxy.provider,
+        provider=provider or settings.llm_proxy.provider_default,
         model=model or settings.llm_proxy.model,
         prompt_length=len(prompt),
     )
@@ -305,7 +305,8 @@ async def llm_list_models(provider: str | None = None) -> list[dict[str, Any]]:
         List of available models with their details
     """
     logger.info(
-        "llm_list_models_request", provider=provider or settings.llm_proxy.provider
+        "llm_list_models_request",
+        provider=provider or settings.llm_proxy.provider_default,
     )
 
     models = await llm_server.list_models(provider)
@@ -349,7 +350,7 @@ async def llm_status() -> str:
     """
     status = {
         "enabled": settings.llm_proxy.enabled,
-        "default_provider": settings.llm_proxy.provider,
+        "default_provider": settings.llm_proxy.provider_default,
         "default_model": settings.llm_proxy.model,
         "configured_providers": list(llm_server.clients.keys()),
         "metrics": llm_server.get_metrics(),
