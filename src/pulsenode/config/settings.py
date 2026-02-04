@@ -1,6 +1,6 @@
 from pydantic import Field, BeforeValidator
 from typing import Literal, Annotated
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def empty_str_to_none(v):
@@ -19,7 +19,7 @@ OptionalInt = Annotated[int | None, BeforeValidator(empty_str_to_none)]
 class LLMProxyConfig(BaseSettings):
     # Note: all keys will be prefixed with "llm_proxy_" in environment variables
     enabled: bool = Field(False, description="Enable LLM proxy functionality")
-    provider: Literal["ollama", "llamacpp"] = Field(
+    provider_default: Literal["ollama", "llamacpp"] = Field(
         "ollama", description="Default LLM provider (ollama or llamacpp)"
     )
     endpoint: str = Field(
@@ -37,11 +37,12 @@ class LLMProxyConfig(BaseSettings):
     )
     stream: bool = Field(True, description="Enable streaming responses")
 
-    class Config:
-        env_prefix = "llm_proxy_"
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_prefix="llm_proxy_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 class Settings(BaseSettings):
@@ -50,14 +51,15 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = 30
 
     llm_proxy: LLMProxyConfig = Field(
-        default_factory=lambda: LLMProxyConfig(),
+        default_factory=LLMProxyConfig,
         description="Configuration for LLM proxy functionality",
     )
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()
