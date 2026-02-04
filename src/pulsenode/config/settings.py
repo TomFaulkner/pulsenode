@@ -1,6 +1,19 @@
-from pydantic import Field
-from typing import Literal
+from pydantic import Field, BeforeValidator
+from typing import Literal, Annotated
 from pydantic_settings import BaseSettings
+
+
+def empty_str_to_none(v):
+    """Convert empty strings to None for optional fields."""
+    if v == "":
+        return None
+    return v
+
+
+# Type for optional string fields that might be empty in .env
+OptionalStr = Annotated[str | None, BeforeValidator(empty_str_to_none)]
+# Type for optional int fields that might be empty in .env
+OptionalInt = Annotated[int | None, BeforeValidator(empty_str_to_none)]
 
 
 class LLMProxyConfig(BaseSettings):
@@ -13,13 +26,13 @@ class LLMProxyConfig(BaseSettings):
         "http://localhost:11434", description="Base URL for the LLM provider"
     )
     model: str = Field("llama3", description="Default model to use")
-    api_key: str | None = Field(
+    api_key: OptionalStr = Field(
         None, description="API key for authentication (if required)"
     )
     temperature: float = Field(
         0.7, ge=0.0, le=1.0, description="Default temperature for text generation"
     )
-    max_tokens: int | None = Field(
+    max_tokens: OptionalInt = Field(
         None, description="Maximum number of tokens to generate (if supported)"
     )
     stream: bool = Field(True, description="Enable streaming responses")
@@ -37,16 +50,7 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = 30
 
     llm_proxy: LLMProxyConfig = Field(
-        default_factory=lambda: LLMProxyConfig(
-            enabled=False,
-            provider="ollama",
-            endpoint="http://localhost:11434",
-            model="llama3",
-            api_key=None,
-            temperature=0.7,
-            max_tokens=None,
-            stream=True,
-        ),
+        default_factory=lambda: LLMProxyConfig(),
         description="Configuration for LLM proxy functionality",
     )
 
