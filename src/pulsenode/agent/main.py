@@ -1,19 +1,21 @@
-import json
 import logging
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import Any, AsyncGenerator
+from typing import Any
+from collections.abc import AsyncGenerator
 
-from pulsenode.config import main_settings
+from pulsenode.config import main_settings, Settings, LLMProxyConfig
 from pulsenode.agent.llm_mcp import LlmMcp
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 # Config: Replace with your MCP server details
-MCP_TRIAGE_LLM_URL = "http://your-mcp-server/triage-llm/infer"  # Cheap LLM endpoint
-MCP_CAPABLE_LLM_URL = "http://your-mcp-server/capable-llm/infer"  # Better LLM endpoint
+MCP_TRIAGE_LLM_URL = "http://localhost:8000/mcp"
+MCP_CAPABLE_LLM_URL = MCP_TRIAGE_LLM_URL
 MCP_AUTH_TOKEN = "your-mcp-token"  # Server-side auth, not API keys
 
 
@@ -39,23 +41,31 @@ class ChannelMcp:
     fake_messages: bool = False
 
     async def receive_messages(self) -> AsyncGenerator[list[str]]:
-        while True:                               # infinite loop
+        while True:  # infinite loop
             try:
                 # new_messages = await self.poll_or_wait_for_next()  # e.g. await websocket.recv(), imap idle, webhook wait, etc.
                 new_messages: list[str] = []
                 if self.fake_messages:
-                    new_messages = [f"ntest message from {self.name} at {datetime.now(UTC)}", "empty message"]
+                    new_messages = [
+                        f"ntest message from {self.name} at {datetime.now(UTC)}",
+                        "empty message",
+                    ]
                 for msg in new_messages:
-                    await asyncio.sleep(3)  # for fake purposes, don't include this in real code
-                    yield msg                     # produce one message at a time
+                    await asyncio.sleep(
+                        3
+                    )  # for fake purposes, don't include this in real code
+                    yield msg  # produce one message at a time
                 else:
-                    await asyncio.sleep(3)  # for fake purposes, don't include this in real code
+                    await asyncio.sleep(
+                        3
+                    )  # for fake purposes, don't include this in real code
                     yield []
             except asyncio.CancelledError:
-                raise                             # allow clean shutdown
+                raise  # allow clean shutdown
             except Exception as e:
                 logger.warning("Recoverable error, retrying...")
-                await asyncio.sleep(5)            # backoff & continue
+                await asyncio.sleep(5)  # backoff & continue
+
 
 class Agent:
     def __init__(
@@ -64,15 +74,16 @@ class Agent:
         capable_llm: LlmMcp,
         context: Context,
         channels: list[ChannelMcp],
-        settings: Any = main_settings,
+        settings: Settings = main_settings,
     ):
-        self.memory = []  # Simple list for conversation history
-        self.channels = channels
-        self.incoming_queue = asyncio.Queue()
-        self._running = False
-        self.settings = settings
-        self.triage_llm = triage_llm
-        self.capable_llm = capable_llm
+        self.memory: list[dict[str, str]] = []
+        self.channels: list[ChannelMcp] = channels
+        self.incoming_queue: asyncio.Queue[tuple[str, list[str]]] = asyncio.Queue()
+        self._running: bool = False
+        self.settings: Settings = settings
+        self.triage_llm: LlmMcp = triage_llm
+        self.capable_llm: LlmMcp = capable_llm
+        self._listener_tasks: list[asyncio.Task[None]] = []
 
     async def heartbeat(self):
         await self.start_channel_listeners()  # only once
@@ -81,7 +92,7 @@ class Agent:
         while self._running:
             logger.info("Heartbeat: Checking for new inputs...")
             # Non-blocking drain of whatever arrived since last heartbeat
-            pending = []
+            pending: list[tuple[str, list[str]]] = []
             while not self.incoming_queue.empty():
                 pending.append(await self.incoming_queue.get())
                 if len(pending) > 10:
@@ -101,9 +112,9 @@ class Agent:
             await asyncio.sleep(self.settings.heartbeat_interval_seconds)
 
     async def start_channel_listeners(self):
-        async def listener(channel):
+        async def listener(channel: ChannelMcp):
             try:
-                async for msg in channel.receive_messages():  # async generator forever
+                async for msg in channel.receive_messages():
                     if msg:
                         logger.debug("Queuing: %s", msg)
                         await self.incoming_queue.put((channel.name, msg))
@@ -121,10 +132,10 @@ class Agent:
 
         # Cancel all listener tasks
         for task in self._listener_tasks:
-            task.cancel()
+            _ = task.cancel()
 
         # Wait for them to actually stop (they should see CancelledError)
-        await asyncio.gather(*self._listener_tasks, return_exceptions=True)
+        _ = await asyncio.gather(*self._listener_tasks, return_exceptions=True)
 
         # Optional: drain queue one last time, close connections, etc.
 
@@ -149,9 +160,9 @@ class Agent:
 
     def call_tool(self, tool: str) -> str:
         # Example: MCP tool call
-        if tool == 'hello_world':
-            return 'hello world!'
-        return ''
+        if tool == "hello_world":
+            return "hello world!"
+        return ""
 
         # response = requests.post(
         #     MCP_TOOL_URL,
