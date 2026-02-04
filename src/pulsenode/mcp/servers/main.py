@@ -13,7 +13,7 @@ from pulsenode.mcp.servers.llm_proxy import llm_proxy_mcp
 from pulsenode.config.settings import settings
 
 
-logger = cast("BoundLogger", get_logger(__name__).bind(service="mcp"))
+logger = cast("BoundLogger", get_logger(__name__).bind(service="mcp-server"))
 
 
 class LoggingMiddleware(Middleware):
@@ -38,7 +38,7 @@ auth = JWTVerifier(
 )
 
 
-mcp = FastMCP(mcp_server_settings.mcp_server_name, auth=auth)
+mcp = FastMCP(mcp_server_settings.mcp_server_name)  # , auth=auth)
 mcp.add_middleware(LoggingMiddleware())
 
 # Add LLM proxy server if enabled
@@ -54,14 +54,7 @@ async def health_check(request: Request) -> PlainTextResponse:
 
 @mcp.tool
 async def greet(name: str, ctx: Context) -> list[str]:
-    gel = ctx.get_state("gel_client")
-    r2 = await gel.query(
-        "with company := (select Company filter .id = <uuid>global token_current_company), clients := (select Client) select clients { name } order by .name;"
-    )
-    print("r2:", r2)
-    company_id: UUID = ctx.get_state("company_id")
-    # return f"Hello, {name} from {company_id}!"
-    return [r.name for r in r2]
+    return f"Hello, {name}"
 
 
 if __name__ == "__main__":
