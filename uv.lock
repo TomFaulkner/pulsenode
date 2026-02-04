@@ -727,6 +727,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "structlog" },
 ]
@@ -740,6 +741,7 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.14.4" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pyjwt", specifier = ">=2.11.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "structlog", specifier = ">=25.5.0" },
 ]
