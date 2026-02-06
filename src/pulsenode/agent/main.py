@@ -2,11 +2,15 @@ import logging
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import Any
+from typing import TypedDict
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
-from pulsenode.config import main_settings, Settings, LLMProxyConfig
+from pulsenode.config import main_settings, Settings
 from pulsenode.agent.llm_mcp import LlmMcp
+from pulsenode.agent.sessions import SessionManager, Session
+from pulsenode.agent.memory import MemoryManager, MemoryTools
+from pulsenode.agent.agent_config import AgentConfigManager
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -39,8 +43,9 @@ class ChannelMcp:
     type: str  # e.g., "telegram", "email"
     identifier: str  # e.g., chat_id, email address
     fake_messages: bool = False
+    thread_id: str | None = None  # For email threads or other threaded channels
 
-    async def receive_messages(self) -> AsyncGenerator[list[str]]:
+    async def receive_messages(self) -> AsyncGenerator[str]:
         while True:  # infinite loop
             try:
                 # new_messages = await self.poll_or_wait_for_next()  # e.g. await websocket.recv(), imap idle, webhook wait, etc.
@@ -59,12 +64,17 @@ class ChannelMcp:
                     await asyncio.sleep(
                         3
                     )  # for fake purposes, don't include this in real code
-                    yield []
+                    yield ""
             except asyncio.CancelledError:
                 raise  # allow clean shutdown
-            except Exception as e:
+            except Exception:
                 logger.warning("Recoverable error, retrying...")
                 await asyncio.sleep(5)  # backoff & continue
+
+
+class TriageResponse(TypedDict):
+    needed: bool
+    reason: str
 
 
 class Agent:
@@ -74,40 +84,59 @@ class Agent:
         capable_llm: LlmMcp,
         context: Context,
         channels: list[ChannelMcp],
+        agent_name: str = "default_agent",
+        pulsenode_dir: Path | None = None,
         settings: Settings = main_settings,
     ):
-        self.memory: list[dict[str, str]] = []
+        self.agent_name: str = agent_name
         self.channels: list[ChannelMcp] = channels
-        self.incoming_queue: asyncio.Queue[tuple[str, list[str]]] = asyncio.Queue()
+        self.incoming_queue: asyncio.Queue[tuple[str, str, str]] = (
+            asyncio.Queue()
+        )  # (session_id, channel_name, msg)
         self._running: bool = False
         self.settings: Settings = settings
         self.triage_llm: LlmMcp = triage_llm
         self.capable_llm: LlmMcp = capable_llm
         self._listener_tasks: list[asyncio.Task[None]] = []
 
+        # Initialize session and memory management
+        base_dir = pulsenode_dir or Path.home() / ".pulsenode"
+        self.session_manager = SessionManager(base_dir)
+        self.memory_manager = MemoryManager(self.session_manager)
+        self.memory_tools = MemoryTools(self.memory_manager)
+        self.config_manager = AgentConfigManager(base_dir)
+
+        # Map to track which session is used for each message
+        self._message_sessions: dict[str, str] = {}  # temp_id -> session_id
+
     async def heartbeat(self):
-        await self.start_channel_listeners()  # only once
+        await self.start_channel_listeners()
         self._running = True
 
         while self._running:
             logger.info("Heartbeat: Checking for new inputs...")
             # Non-blocking drain of whatever arrived since last heartbeat
-            pending: list[tuple[str, list[str]]] = []
+            pending: list[tuple[str, str, str]] = []
             while not self.incoming_queue.empty():
                 pending.append(await self.incoming_queue.get())
                 if len(pending) > 10:
                     break
 
-            for _, msg in pending:
+            for session_id, channel_name, msg in pending:
                 is_action_needed = await self.triage_message(msg)  # or batch them
                 if is_action_needed["needed"]:
-                    response = await self.execute_task(msg, is_action_needed["reason"])
+                    response = await self.execute_task(
+                        session_id, msg, is_action_needed["reason"]
+                    )
                     logger.info(f"Response: {response}")
-                    self.send_response(response)
+                    self.send_response(response, channel_name)
                 else:
                     logger.info("No action needed for message.")
 
             # Optional: also run scheduled jobs here
+
+            # Check for session rollover
+            await self._check_session_rollover()
 
             await asyncio.sleep(self.settings.heartbeat_interval_seconds)
 
@@ -117,7 +146,9 @@ class Agent:
                 async for msg in channel.receive_messages():
                     if msg:
                         logger.debug("Queuing: %s", msg)
-                        await self.incoming_queue.put((channel.name, msg))
+                        # Create session ID for this channel
+                        session_id = await self._get_session_id_for_channel(channel)
+                        await self.incoming_queue.put((session_id, channel.name, msg))
             except Exception as exc:
                 logger.error(f"Channel {channel.name} died: {exc}")
                 # optionally restart or mark dead
@@ -126,6 +157,16 @@ class Agent:
         self._listener_tasks = [
             asyncio.create_task(listener(ch)) for ch in self.channels
         ]
+
+    async def _get_session_id_for_channel(self, channel: ChannelMcp) -> str:
+        """Get or create session ID for a channel message."""
+        session = await self.session_manager.get_or_create_session(
+            self.agent_name,
+            channel.type,
+            channel.identifier,
+            channel.thread_id,  # Support thread-based sessions for email
+        )
+        return session.session_id
 
     async def shutdown(self):
         self._running = False
@@ -139,22 +180,36 @@ class Agent:
 
         # Optional: drain queue one last time, close connections, etc.
 
-    async def triage_message(self, msg: str) -> dict[str, Any]:
+    async def triage_message(self, msg: str) -> TriageResponse:
         # Prompt for cheap LLM: Keep short for low cost
         prompt = f"Message: {msg}\nIs action needed? Respond JSON: {{'needed': bool, 'reason': str}}"
         response = await self.triage_llm.generate_triage_response(prompt)
         return {"needed": response.needed, "reason": response.reason}
 
-    async def execute_task(self, msg: str, reason: str) -> str:
-        # Use capable LLM via MCP
-        full_prompt = f"Task reason: {reason}\nMessage: {msg}\nHistory: {self.memory}\nRespond appropriately."
+    async def execute_task(self, session_id: str, msg: str, reason: str) -> str:
+        # Get session
+        session = self.session_manager.sessions.get(session_id)
+        if not session:
+            return "Error: Session not found"
+
+        # Get context including all memory tiers
+        context = await self.memory_manager.get_context_for_llm(session, msg)
+
+        # Use capable LLM via MCP with full context
+        full_prompt = f"Task reason: {reason}\n\nContext:\n{context}\n\nNew Message: {msg}\n\nRespond appropriately."
         output = await self.capable_llm.generate_response(full_prompt)
+
         if output:
-            self.memory.append({"user": msg, "agent": output})
-            # Optionally call tools via MCP if needed (e.g., if output instructs)
-            if "tool:" in output:
-                tool_result = self.call_tool(output.split("tool:")[1])
-                return f"{output} (Tool result: {tool_result})"
+            # Add to session memory
+            session.add_message("user", msg)
+            session.add_message("agent", output)
+
+            # Save session
+            await self.session_manager.save_session(session)
+
+            # Handle memory tools in output
+            output = await self._handle_memory_tools(session, output)
+
             return output
         return "Error executing task."
 
@@ -171,9 +226,28 @@ class Agent:
         # )
         # return response.json().get("result", "Tool failed")
 
-    def send_response(self, response: str):
+    def send_response(self, response: str, channel_name: str):
         # Mock: Print. Real: Push to channel via MCP
-        logger.info(f"Sending response: {response}")
+        logger.info(f"Sending response to {channel_name}: {response}")
+
+    async def _handle_memory_tools(self, session: Session, output: str) -> str:
+        """Handle memory tool calls in LLM output."""
+        # TODO: For now, just return output - will implement tool parsing later
+        # In a complete implementation, this would parse tool calls like:
+        # "tool:update_agent_memory:fact=User prefers Python, importance=4"
+        return output
+
+    async def _check_session_rollover(self):
+        """Check if any sessions need to be archived."""
+        for session in list(self.session_manager.sessions.values()):
+            should_archive, reason = await self.memory_manager.should_archive_session(
+                session
+            )
+
+            if should_archive:
+                logger.info(f"Rolling over session {session.session_id}: {reason}")
+                await self.memory_manager.archive_and_create_new_session(session)
+                # The session reference in session_manager will be updated
 
 
 async def main():
@@ -204,6 +278,7 @@ async def main():
         capable_llm=capable_llm,
         context=context,
         channels=channels,
+        agent_name="demo_agent",
     )
     await agent.heartbeat()
 
