@@ -1,27 +1,37 @@
 import logging
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import datetime, UTC
 from typing import TypedDict
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from pulsenode.config import main_settings, Settings
+import structlog
+
+from pulsenode.config.settings import settings, create_default_settings, Settings
 from pulsenode.agent.llm_mcp import LlmMcp
 from pulsenode.agent.sessions import SessionManager, Session
 from pulsenode.agent.memory import MemoryManager, MemoryTools
 from pulsenode.agent.agent_config import AgentConfigManager
+from pulsenode.agent.tools import (
+    ToolExecutor,
+    SecurityChecker,
+    ApprovalManager,
+    ToolRegistry,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
+
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logger = structlog.getLogger(__name__)
 
 # Config: Replace with your MCP server details
 MCP_TRIAGE_LLM_URL = "http://localhost:8000/mcp"
 MCP_CAPABLE_LLM_URL = MCP_TRIAGE_LLM_URL
 MCP_AUTH_TOKEN = "your-mcp-token"  # Server-side auth, not API keys
-
 
 # Mock channel: In real, this would poll Telegram/email via MCP
 MESSAGE_QUEUE_FILE = "message_queue.json"  # Simulate incoming messages
@@ -86,7 +96,7 @@ class Agent:
         channels: list[ChannelMcp],
         agent_name: str = "default_agent",
         pulsenode_dir: Path | None = None,
-        settings: Settings = main_settings,
+        settings: Settings = settings or create_default_settings(),
     ):
         self.agent_name: str = agent_name
         self.channels: list[ChannelMcp] = channels
@@ -94,7 +104,7 @@ class Agent:
             asyncio.Queue()
         )  # (session_id, channel_name, msg)
         self._running: bool = False
-        self.settings: Settings = settings
+        self.settings: Settings = settings or create_default_settings()
         self.triage_llm: LlmMcp = triage_llm
         self.capable_llm: LlmMcp = capable_llm
         self._listener_tasks: list[asyncio.Task[None]] = []
@@ -106,10 +116,25 @@ class Agent:
         self.memory_tools = MemoryTools(self.memory_manager)
         self.config_manager = AgentConfigManager(base_dir)
 
+        # Load system capabilities for tools
+        system_capabilities_file = base_dir / "system_capabilities.json"
+        if system_capabilities_file.exists():
+            with open(system_capabilities_file, "r") as f:
+                self.system_capabilities = json.load(f)
+        else:
+            self.system_capabilities = {}
+
+        # Initialize tool system (will be configured per agent)
+        self.tool_executor: ToolExecutor | None = None
+        self.tool_registry: ToolRegistry | None = None
+
         # Map to track which session is used for each message
         self._message_sessions: dict[str, str] = {}  # temp_id -> session_id
 
     async def heartbeat(self):
+        # Initialize tool system before starting
+        await self._initialize_tool_system()
+
         await self.start_channel_listeners()
         self._running = True
 
@@ -158,16 +183,6 @@ class Agent:
             asyncio.create_task(listener(ch)) for ch in self.channels
         ]
 
-    async def _get_session_id_for_channel(self, channel: ChannelMcp) -> str:
-        """Get or create session ID for a channel message."""
-        session = await self.session_manager.get_or_create_session(
-            self.agent_name,
-            channel.type,
-            channel.identifier,
-            channel.thread_id,  # Support thread-based sessions for email
-        )
-        return session.session_id
-
     async def shutdown(self):
         self._running = False
 
@@ -195,6 +210,10 @@ class Agent:
         # Get context including all memory tiers
         context = await self.memory_manager.get_context_for_llm(session, msg)
 
+        # Add tool information to context
+        if self.tool_registry:
+            context += self.tool_registry.get_available_tools()
+
         # Use capable LLM via MCP with full context
         full_prompt = f"Task reason: {reason}\n\nContext:\n{context}\n\nNew Message: {msg}\n\nRespond appropriately."
         output = await self.capable_llm.generate_response(full_prompt)
@@ -207,8 +226,9 @@ class Agent:
             # Save session
             await self.session_manager.save_session(session)
 
-            # Handle memory tools in output
-            output = await self._handle_memory_tools(session, output)
+            # Handle tool calls in output
+            if self.tool_registry:
+                output = await self._handle_tool_calls(session, output)
 
             return output
         return "Error executing task."
@@ -230,11 +250,100 @@ class Agent:
         # Mock: Print. Real: Push to channel via MCP
         logger.info(f"Sending response to {channel_name}: {response}")
 
-    async def _handle_memory_tools(self, session: Session, output: str) -> str:
-        """Handle memory tool calls in LLM output."""
-        # TODO: For now, just return output - will implement tool parsing later
-        # In a complete implementation, this would parse tool calls like:
-        # "tool:update_agent_memory:fact=User prefers Python, importance=4"
+    async def _get_session_id_for_channel(self, channel: ChannelMcp) -> str:
+        """Get or create session ID for a channel message."""
+        session = await self.session_manager.get_or_create_session(
+            self.agent_name,
+            channel.type,
+            channel.identifier,
+            channel.thread_id,  # Support thread-based sessions for email
+        )
+        return session.session_id
+
+    async def _initialize_tool_system(self) -> None:
+        """Initialize tool system for this agent."""
+        # Load agent configuration
+        agent_config = await self.config_manager.load_agent_config(self.agent_name)
+
+        if not agent_config.tools.enabled:
+            logger.info("tools_disabled", agent_name=self.agent_name)
+            return
+
+        # Setup file directories
+        workspace_dir = (
+            Path(self.settings.pulsenode_directory)
+            / "agents"
+            / self.agent_name
+            / self.settings.default_workspace_dir
+        )
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup allowed directories for file operations
+        allowed_dirs = [str(workspace_dir)]
+        if agent_config.tools.file.access_home_directory:
+            allowed_dirs.append(str(Path.home()))
+        allowed_dirs.extend(agent_config.tools.file.allowed_directories)
+
+        # Initialize security checker
+        security_checker = SecurityChecker(
+            allowed_commands=agent_config.tools.shell.allowlist,
+            allowed_directories=allowed_dirs,
+            access_home_directory=agent_config.tools.file.access_home_directory,
+        )
+
+        # Initialize approval manager
+        approval_manager = ApprovalManager(
+            timeout_seconds=agent_config.tools.approval_timeout_seconds
+        )
+
+        # Initialize tool executor
+        self.tool_executor = ToolExecutor(security_checker, approval_manager)
+
+        # Initialize tool registry
+        self.tool_registry = ToolRegistry(self.tool_executor, self.system_capabilities)
+
+        logger.info("tools_initialized", agent_name=self.agent_name)
+
+    async def _handle_tool_calls(self, session: Session, output: str) -> str:
+        """Handle tool calls in LLM output."""
+        if not self.tool_registry:
+            return output
+
+        # Parse and execute all tool calls in the output
+        results = []
+        remaining_text = output
+
+        # Simple parsing - look for JSON tool calls
+        import re
+
+        # Pattern to find JSON tool calls
+        pattern = r'\{[^{}]*"tool":\s*"[^"]+"[^{}]*\}'
+
+        tool_calls = re.findall(pattern, output)
+
+        for tool_call_json in tool_calls:
+            try:
+                tool_result = await self.tool_registry.execute_tool_from_text(
+                    tool_call_json
+                )
+
+                if tool_result.success:
+                    result_text = f"Tool result: {tool_result.output}"
+                else:
+                    result_text = f"Tool error: {tool_result.error}"
+
+                results.append(result_text)
+
+                # Replace the tool call with the result
+                remaining_text = remaining_text.replace(tool_call_json, result_text)
+
+            except Exception as e:
+                logger.error("tool_call_error", error=str(e))
+                results.append(f"Tool call failed: {str(e)}")
+
+        if results:
+            return f"{output}\n\nTool Results:\n" + "\n".join(results)
+
         return output
 
     async def _check_session_rollover(self):

@@ -2,6 +2,7 @@
 Test configuration and fixtures.
 """
 
+import asyncio
 import pytest
 import sys
 import os

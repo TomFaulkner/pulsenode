@@ -1,5 +1,4 @@
 from typing import cast
-from uuid import UUID
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
@@ -8,7 +7,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from structlog import BoundLogger, get_logger
 
-from pulsenode.config import main_settings, mcp_server_settings
+from pulsenode.config import mcp_server_settings
 from pulsenode.mcp.servers.llm_proxy import llm_proxy_mcp
 from pulsenode.config.settings import settings
 

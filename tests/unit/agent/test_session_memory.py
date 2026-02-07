@@ -4,14 +4,12 @@ import asyncio
 import sys
 import os
 import tempfile
-import shutil
-from datetime import datetime, UTC
 from pathlib import Path
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from pulsenode.agent.sessions import SessionManager, Session, Message
+from pulsenode.agent.sessions import SessionManager
 from pulsenode.agent.memory import MemoryManager, MemoryTools
 from pulsenode.agent.agent_config import AgentConfigManager
 
@@ -207,9 +205,9 @@ async def test_cross_agent_access():
         await config_manager.save_agent_config(agent2_config)
 
         # Test access
-        assert await config_manager.check_agent_access("agent1", "agent2") == True
-        assert await config_manager.check_agent_access("agent2", "agent1") == False
-        assert await config_manager.check_agent_access("agent1", "agent1") == True
+        assert await config_manager.check_agent_access("agent1", "agent2")
+        assert not await config_manager.check_agent_access("agent2", "agent1")
+        assert await config_manager.check_agent_access("agent1", "agent1")
 
         # Test accessible agents
         accessible = await config_manager.get_accessible_agents("agent1")

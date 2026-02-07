@@ -98,6 +98,24 @@ class Settings(BaseSettings):
         description="Maximum recent messages to include in context",
     )
 
+    # Tool configuration
+    tools_enabled: bool = Field(
+        default=True,
+        description="Enable tool system for agents",
+    )
+    default_workspace_dir: str = Field(
+        "workspace",
+        description="Default workspace directory name within agent directory",
+    )
+    default_approval_timeout: int = Field(
+        300,
+        description="Default approval timeout in seconds",
+    )
+    max_file_size_kb: int = Field(
+        100,
+        description="Maximum file size to read directly (KB)",
+    )
+
     llm_proxy: LLMProxyConfig = Field(
         default_factory=LLMProxyConfig,
         description="Configuration for LLM proxy functionality",
@@ -122,6 +140,10 @@ def create_default_settings() -> Settings:
         max_channel_memory_chars=1500,
         max_session_summary_chars=800,
         max_recent_messages=10,
+        tools_enabled=True,
+        default_workspace_dir="workspace",
+        default_approval_timeout=300,
+        max_file_size_kb=100,
     )
 
 

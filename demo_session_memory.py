@@ -41,7 +41,7 @@ async def demo_session_memory():
             "I'm a demo agent that helps users with Python programming and async patterns.",
         )
 
-        print(f"✅ Agent 'demo_agent' configured")
+        print("✅ Agent 'demo_agent' configured")
         print(f"   Purpose: {config.purpose}")
         print()
 

@@ -30,8 +30,8 @@ async def main():
         # List available operations
         tools = await client.list_tools()
         print(tools)
-        resources = await client.list_resources()
-        prompts = await client.list_prompts()
+        await client.list_resources()
+        await client.list_prompts()
 
         # Execute operations
         result = await client.call_tool("greet", {"name": "World"})

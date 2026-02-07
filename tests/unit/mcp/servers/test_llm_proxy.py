@@ -3,13 +3,11 @@ Unit tests for LLM proxy server.
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from fastmcp import Context
 
 from pulsenode.mcp.servers.llm_proxy import (
     LLMProxyServer,
-    ChatMessage,
-    LLMRequest,
     LLMResponse,
 )
 from pulsenode.mcp.clients.ollama_client import OllamaClient
@@ -61,14 +59,6 @@ class TestLLMProxyServer:
 
     def test_init_with_config(self):
         """Test LLMProxyServer initialization with config."""
-        config = {
-            "ollama": {
-                "endpoint": "http://localhost:11434",
-                "model": "llama2",
-                "api_key": "test-key",
-            },
-            "llamacpp": {"endpoint": "http://localhost:8080", "model": "codellama"},
-        }
         server = LLMProxyServer()
 
         assert len(server.clients) == 2

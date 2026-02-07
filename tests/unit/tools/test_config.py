@@ -6,7 +6,6 @@ import pytest
 from unittest.mock import patch
 
 from pulsenode.config.settings import Settings, LLMProxyConfig
-from pulsenode.config import main_settings
 
 
 @pytest.mark.unit
@@ -94,7 +93,7 @@ class TestSettings:
         }
 
         with patch.dict("os.environ", env_vars, clear=True):
-            from pulsenode.config.settings import settings
+            pass
             # This would test environment variable loading
             # Implementation would need to be updated to load from env
 
