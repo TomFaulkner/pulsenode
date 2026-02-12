@@ -3,14 +3,18 @@
 Provides secure tool execution with approval workflow.
 """
 
-import json
+from __future__ import annotations
+from typing import final
+
 import asyncio
-import time
+import json
 import shutil
-from pathlib import Path
-from datetime import datetime, UTC
-from typing import Any, Dict, List, Callable
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from structlog import get_logger
 
@@ -23,7 +27,7 @@ class ToolCall:
 
     tool_type: str  # "shell", "file", "http"
     action: str  # "exec", "read", "write", "get", etc.
-    args: Dict[str, Any] = field(default_factory=dict)
+    args: dict[str, Any] = field(default_factory=dict)
     requires_approval: bool = False
     approval_id: str | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -51,11 +55,12 @@ class ApprovalRequest:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
+@final
 class SecurityChecker:
     """Handles security validation for tool calls."""
 
     # Files that require approval for any operation
-    SENSITIVE_FILE_PATTERNS = [
+    SENSITIVE_FILE_PATTERNS: list[str] = [
         ".env",
         ".env.*",
         "*secret*",
@@ -70,7 +75,7 @@ class SecurityChecker:
     ]
 
     # Binary file extensions that should be blocked for reading with cat
-    BINARY_EXTENSIONS = {
+    BINARY_EXTENSIONS: set[str] = {
         ".pdf",
         ".zip",
         ".tar",
@@ -109,7 +114,7 @@ class SecurityChecker:
     }
 
     # Commands that are always considered safe
-    SAFE_COMMANDS = {
+    SAFE_COMMANDS: set[str] = {
         "ls",
         "cat",
         "grep",
@@ -141,7 +146,7 @@ class SecurityChecker:
     }
 
     # Commands that are always considered dangerous
-    DANGEROUS_COMMANDS = {
+    DANGEROUS_COMMANDS: set[str] = {
         "rm",
         "rmdir",
         "dd",
@@ -165,8 +170,8 @@ class SecurityChecker:
 
     def __init__(
         self,
-        allowed_commands: List[str],
-        allowed_directories: List[str],
+        allowed_commands: list[str],
+        allowed_directories: list[str],
         access_home_directory: bool = False,
     ):
         self.allowed_commands = set(allowed_commands)
@@ -302,9 +307,9 @@ class ApprovalManager:
 
     def __init__(self, timeout_seconds: int = 300):
         self.timeout_seconds = timeout_seconds
-        self.pending_requests: Dict[str, ApprovalRequest] = {}
-        self.approvals: Dict[str, bool] = {}
-        self.approval_callbacks: Dict[str, Callable[[bool], None]] = {}
+        self.pending_requests: dict[str, ApprovalRequest] = {}
+        self.approvals: dict[str, bool] = {}
+        self.approval_callbacks: dict[str, Callable[[bool], None]] = {}
         self._approval_counter = 0
 
     def generate_approval_id(self) -> str:
@@ -402,7 +407,7 @@ class ApprovalManager:
 
         return False
 
-    def get_pending_requests(self) -> List[ApprovalRequest]:
+    def get_pending_requests(self) -> list[ApprovalRequest]:
         """Get all pending approval requests."""
         return list(self.pending_requests.values())
 
@@ -638,11 +643,12 @@ class ToolExecutor:
         return ToolResult(success=False, error="Container tool not yet implemented")
 
 
+@final
 class ToolRegistry:
     """Registry for available tools."""
 
     def __init__(
-        self, tool_executor: ToolExecutor, system_capabilities: Dict | None = None
+        self, tool_executor: ToolExecutor, system_capabilities: dict | None = None
     ):
         self.tool_executor = tool_executor
         self.system_capabilities = system_capabilities or {}
