@@ -3,7 +3,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import TypedDict
+from typing import Protocol, TypedDict
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -47,7 +47,7 @@ class Context:
 
 
 @dataclass
-class ChannelMcp:
+class ChannelMcp(Protocol):
     mcp_url: str
 
     name: str
@@ -151,13 +151,24 @@ class Agent:
             for session_id, channel_name, msg in pending:
                 is_action_needed = await self.triage_message(msg)  # or batch them
                 if is_action_needed["needed"]:
+                    logger.info(
+                        "Action needed for message",
+                        session_id=session_id,
+                        reason=is_action_needed["reason"],
+                    )
                     response = await self.execute_task(
                         session_id, msg, is_action_needed["reason"]
                     )
-                    logger.info(f"Response: {response}")
+                    logger.info(
+                        f"execute_task Response: {response}", session_id=session_id
+                    )
                     self.send_response(response, channel_name)
                 else:
-                    logger.info("No action needed for message.")
+                    logger.info(
+                        "No action needed for message.",
+                        session_id=session_id,
+                        reason=is_action_needed["reason"],
+                    )
 
             # Optional: also run scheduled jobs here
 
@@ -200,7 +211,7 @@ class Agent:
         # Prompt for cheap LLM: Keep short for low cost
         prompt = f"""Message: {msg}
 
-Is action needed? Respond JSON: {{'needed': bool, 'reason': str}}
+Is action needed? Respond with only JSON in this format: {{"needed": bool, "reason": str}}
 
 Guidelines:
 - Questions asking for information (weather, facts, calculations) -> needed: true
@@ -208,6 +219,11 @@ Guidelines:
 - Greetings -> needed: false
 - Simple acknowledgments -> needed: false"""
         response = await self.triage_llm.generate_triage_response(prompt)
+        logger.debug(
+            f"Triage response: {response}",
+            needed=response.needed,
+            reason=response.reason,
+        )
         return {"needed": response.needed, "reason": response.reason}
 
     async def execute_task(self, session_id: str, msg: str, reason: str) -> str:
@@ -229,7 +245,7 @@ Guidelines:
 
 User Message: {msg}
 
-Use the available tools to complete the task if needed. When you use a tool, output the tool call as JSON (e.g., {{"tool": "http", "method": "GET", "url": "..."}}). After getting tool results, provide your final response."""
+Use the available tools to complete the task if needed. When you use a tool, output the tool call as JSON (e.g., {{"tool": "http", "method": "GET", "url": "..."}}). After getting tool results, provide your final response as plain text. Do NOT include any triage-style JSON like {{"needed": true, "reason": "..."}}."""
         output = await self.capable_llm.generate_response(full_prompt)
 
         if output:
@@ -327,42 +343,34 @@ Use the available tools to complete the task if needed. When you use a tool, out
         if not self.tool_registry:
             return output
 
-        # Parse and execute all tool calls in the output
-        results = []
+        import json
+
         remaining_text = output
 
-        # Simple parsing - look for JSON tool calls
-        import re
+        for line in output.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
 
-        # Pattern to find JSON tool calls - more permissive for URLs and nested content
-        pattern = r'\{"tool":\s*"[^"]+"(?:,\s*"[^"]+":\s*"[^"]+")*\}'
-
-        tool_calls = re.findall(pattern, output)
-
-        for tool_call_json in tool_calls:
             try:
-                tool_result = await self.tool_registry.execute_tool_from_text(
-                    tool_call_json
-                )
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict) and "tool" in parsed:
+                    tool_call_json = json.dumps(parsed)
+                    tool_result = await self.tool_registry.execute_tool_from_text(
+                        tool_call_json
+                    )
 
-                if tool_result.success:
-                    result_text = f"Tool result: {tool_result.output}"
-                else:
-                    result_text = f"Tool error: {tool_result.error}"
+                    if tool_result.success:
+                        result_text = f"Tool result: {tool_result.output}"
+                    else:
+                        result_text = f"Tool error: {tool_result.error}"
 
-                results.append(result_text)
+                    remaining_text = remaining_text.replace(tool_call_json, result_text)
 
-                # Replace the tool call with the result
-                remaining_text = remaining_text.replace(tool_call_json, result_text)
+            except (json.JSONDecodeError, ValueError):
+                continue
 
-            except Exception as e:
-                logger.error("tool_call_error", error=str(e))
-                results.append(f"Tool call failed: {str(e)}")
-
-        if results:
-            return f"{output}\n\nTool Results:\n" + "\n".join(results)
-
-        return output
+        return remaining_text
 
     async def _check_session_rollover(self):
         """Check if any sessions need to be archived."""
@@ -379,7 +387,10 @@ Use the available tools to complete the task if needed. When you use a tool, out
 
 async def main():
     triage_llm = LlmMcp(
-        mcp_url=MCP_TRIAGE_LLM_URL, auth_token=MCP_AUTH_TOKEN, max_tokens=50
+        mcp_url=MCP_TRIAGE_LLM_URL,
+        auth_token=MCP_AUTH_TOKEN,
+        max_tokens=50,
+        model="llama3.2",
     )
     capable_llm = LlmMcp(
         mcp_url=MCP_CAPABLE_LLM_URL, auth_token=MCP_AUTH_TOKEN, max_tokens=500

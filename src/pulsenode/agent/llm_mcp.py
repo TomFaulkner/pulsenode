@@ -25,7 +25,7 @@ class LlmMcp:
     max_tokens: int
     session_id: str = ""
     provider: str = "ollama"
-    model: str = "llama3"
+    model: str = "llama3.2"
     temperature: float = 0.7
     triage_max_tokens: int = 100
     triage_temperature: float = 0.3
@@ -164,16 +164,26 @@ class LlmMcp:
                 else:
                     text_content = str(result_data) or ""
 
-                # Parse the response to determine if action is needed
-                content_lower = text_content.lower()
-                needed = (
-                    "yes" in content_lower
-                    or "action" in content_lower
-                    or "needed" in content_lower
-                )
+                # Parse the response - prefer JSON, fall back to text matching
+                try:
+                    parsed = json.loads(text_content)
+                    if isinstance(parsed, dict):
+                        needed = bool(parsed.get("needed", False))
+                        reason = str(parsed.get("reason", text_content))
+                    else:
+                        needed = bool(parsed)
+                        reason = text_content
+                except (json.JSONDecodeError, ValueError):
+                    content_lower = text_content.lower()
+                    needed = (
+                        "yes" in content_lower
+                        or "action" in content_lower
+                        or "needed" in content_lower
+                    )
+                    reason = text_content
 
-                logger.debug("triage_response", needed=needed, reason=text_content)
-                return TriageResponse(needed=needed, reason=text_content)
+                logger.debug("triage_response", needed=needed, reason=reason)
+                return TriageResponse(needed=needed, reason=reason)
 
         except Exception as e:
             # Fallback to mock on error
