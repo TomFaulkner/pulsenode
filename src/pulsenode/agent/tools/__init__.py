@@ -18,6 +18,9 @@ from typing import Any
 
 from structlog import get_logger
 
+from pulsenode.agent.agent_config import HttpConfig
+from pulsenode.agent.tools.http import HttpTool
+
 logger = get_logger(__name__)
 
 
@@ -288,8 +291,7 @@ class SecurityChecker:
             return self.check_file_operation(action, path)
 
         elif tool_call.tool_type == "http":
-            # HTTP operations are medium risk by default
-            return True, "medium", "HTTP requests require confirmation"
+            return True, "low", "HTTP requests are allowed"
 
         elif tool_call.tool_type == "container":
             # Container execution is medium-high risk
@@ -416,10 +418,16 @@ class ToolExecutor:
     """Executes tools with security checks and approvals."""
 
     def __init__(
-        self, security_checker: SecurityChecker, approval_manager: ApprovalManager
+        self,
+        security_checker: SecurityChecker,
+        approval_manager: ApprovalManager,
+        http_config: HttpConfig | None = None,
     ):
         self.security_checker = security_checker
         self.approval_manager = approval_manager
+        self.http_tool = (
+            HttpTool(http_config) if http_config and http_config.enabled else None
+        )
 
     async def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """Execute a tool call with security checks."""
@@ -633,9 +641,48 @@ class ToolExecutor:
             return ToolResult(success=False, error=f"File operation failed: {str(e)}")
 
     async def _execute_http_tool(self, tool_call: ToolCall) -> ToolResult:
-        """Execute HTTP tool (placeholder implementation)."""
-        # TODO: Implement HTTP client
-        return ToolResult(success=False, error="HTTP tool not yet implemented")
+        """Execute HTTP tool."""
+        if not self.http_tool:
+            return ToolResult(success=False, error="HTTP tool is not enabled")
+
+        method = tool_call.args.get("method", "GET").upper()
+        url = tool_call.args.get("url", "")
+        headers = tool_call.args.get("headers", {})
+        body = tool_call.args.get("body", "")
+        timeout = tool_call.args.get("timeout")
+
+        if not url:
+            return ToolResult(success=False, error="URL is required")
+
+        try:
+            result = await self.http_tool.request(
+                method=method,
+                url=url,
+                headers=headers if headers else None,
+                body=body if body else None,
+                timeout=timeout,
+            )
+
+            if result["success"]:
+                output = (
+                    f"Status: {result['status_code']} {result.get('status_text', '')}\n"
+                )
+                output += f"Time: {result['response_time']:.2f}s\n\n"
+                output += result["body"]
+                return ToolResult(
+                    success=True,
+                    output=output,
+                    execution_time=result["response_time"],
+                )
+            else:
+                return ToolResult(
+                    success=False,
+                    error=result.get("error", "Request failed"),
+                    execution_time=result.get("response_time", 0.0),
+                )
+
+        except Exception as e:
+            return ToolResult(success=False, error=f"HTTP tool failed: {str(e)}")
 
     async def _execute_container_tool(self, tool_call: ToolCall) -> ToolResult:
         """Execute container tool (placeholder implementation)."""
@@ -702,8 +749,8 @@ You can use the following tools by outputting JSON:
 ### File Tools
 {"tool": "file", "action": "read|write|append|delete|list|exists", "path": "<path>", "content": "<optional_content>"}
 
-### HTTP Tools (Coming Soon)
-{"tool": "http", "method": "GET|POST|PUT|DELETE", "url": "<url>"}
+### HTTP Tools
+{"tool": "http", "method": "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS", "url": "<url>", "headers": {}, "body": "<optional_body>", "timeout": <optional_seconds>}
 
 ### Container Tools (Coming Soon)
 {"tool": "container", "image": "debian:latest", "command": "<command>"}

@@ -15,6 +15,7 @@ from pulsenode.agent.tools import (
     ToolRegistry,
     ToolCall,
 )
+from pulsenode.agent.agent_config import HttpConfig
 
 
 async def demo_tool_system():
@@ -22,8 +23,8 @@ async def demo_tool_system():
     print("🔧 PulseNode Tool System Demo")
     print("=" * 50)
 
-    # Use temporary directory for demo
-    demo_dir = Path.home() / ".pulsenode_demo"
+    # Use current directory for demo
+    demo_dir = Path.cwd() / ".pulsenode_demo"
 
     try:
         # Initialize components
@@ -39,8 +40,17 @@ async def demo_tool_system():
         # Approval manager (30 second timeout for demo)
         approval_manager = ApprovalManager(timeout_seconds=30)
 
+        # HTTP config (allow all hosts for demo)
+        http_config = HttpConfig(
+            enabled=True,
+            allowed_hosts=[],
+            blocked_hosts=[],
+            require_confirmation=False,
+            default_timeout=30,
+        )
+
         # Tool executor
-        tool_executor = ToolExecutor(security_checker, approval_manager)
+        tool_executor = ToolExecutor(security_checker, approval_manager, http_config)
 
         # Tool registry
         tool_registry = ToolRegistry(tool_executor)
@@ -126,8 +136,30 @@ async def demo_tool_system():
 
         print()
 
+        # Demonstrate HTTP tool
+        print("4️⃣ Demonstrating HTTP tool...")
+
+        http_call = ToolCall(
+            tool_type="http",
+            action="request",
+            args={
+                "method": "GET",
+                "url": "https://example.org",
+            },
+        )
+
+        result = await tool_executor.execute_tool_call(http_call)
+        print(f"  HTTP GET: {'✅' if result.success else '❌'}")
+        if result.success:
+            print(f"  Status: {result.output.split(chr(10))[0]}")
+            print(f"  Body preview: {result.output.split(chr(10))[-1][:80]}...")
+        if result.error:
+            print(f"  Error: {result.error}")
+
+        print()
+
         # Demonstrate dangerous tool (requires approval)
-        print("4️⃣ Demonstrating approval-required operation...")
+        print("5️⃣ Demonstrating approval-required operation...")
 
         # Try to access a sensitive file (will require approval)
         sensitive_call = ToolCall(
@@ -157,7 +189,7 @@ async def demo_tool_system():
 
         # Show approval status
         print()
-        print("5️⃣ Approval status:")
+        print("6️⃣ Approval status:")
         pending = approval_manager.get_pending_requests()
         if pending:
             for request in pending:

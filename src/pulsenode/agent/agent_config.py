@@ -77,7 +77,9 @@ class HttpConfig:
 
     enabled: bool = True
     allowed_hosts: list[str] = field(default_factory=list)
+    blocked_hosts: list[str] = field(default_factory=list)
     require_confirmation: bool = True
+    default_timeout: int = 30
 
 
 @dataclass
@@ -166,7 +168,9 @@ class AgentConfigManager:
             http_config = HttpConfig(
                 enabled=http_data.get("enabled", True),
                 allowed_hosts=http_data.get("allowed_hosts", []),
+                blocked_hosts=http_data.get("blocked_hosts", []),
                 require_confirmation=http_data.get("require_confirmation", True),
+                default_timeout=http_data.get("default_timeout", 30),
             )
 
             tools_config = ToolsConfig(
@@ -234,7 +238,9 @@ class AgentConfigManager:
                 "http": {
                     "enabled": config.tools.http.enabled,
                     "allowed_hosts": config.tools.http.allowed_hosts,
+                    "blocked_hosts": config.tools.http.blocked_hosts,
                     "require_confirmation": config.tools.http.require_confirmation,
+                    "default_timeout": config.tools.http.default_timeout,
                 },
                 "approval_timeout_seconds": config.tools.approval_timeout_seconds,
             },
