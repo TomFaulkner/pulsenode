@@ -57,7 +57,7 @@ import logging
 from datetime import datetime, UTC
 from typing import Any, AsyncGenerator
 
-# Third-party imports next  
+# Third-party imports next
 import httpx
 import pydantic
 from fastmcp import FastMCP
@@ -172,11 +172,52 @@ Follow established client pattern for new API integrations. Include metrics dict
 ### MCP Server Pattern
 For new MCP servers, follow FastMCP pattern. Create FastMCP instance, register handlers with @server.tool() decorator, implement _register_handlers() method.
 
+## Tools Module Structure
+
+The tools module is organized as a directory under `src/pulsenode/agent/tools/`:
+
+```
+src/pulsenode/agent/tools/
+├── __init__.py      # Main tool system (ToolExecutor, SecurityChecker, ApprovalManager, ToolRegistry)
+├── http.py          # HTTP tool implementation (HttpTool class)
+├── container.py     # Container tool (future)
+└── database.py      # Database tool (future)
+```
+
+### Key Classes and Their Locations
+
+| Class | File | Purpose |
+|-------|------|---------|
+| `ToolExecutor` | `tools/__init__.py` | Executes tools with security checks |
+| `SecurityChecker` | `tools/__init__.py` | Validates tool operations |
+| `ApprovalManager` | `tools/__init__.py` | Manages approval workflow |
+| `ToolRegistry` | `tools/__init__.py` | Parses LLM tool calls |
+| `HttpTool` | `tools/http.py` | HTTP request execution |
+| `HttpConfig` | `agent_config.py` | HTTP tool configuration |
+
+### Adding a New Tool Category
+
+1. **Create tool class** in `src/pulsenode/agent/tools/<category>.py`
+2. **Wire into `ToolExecutor`** in `tools/__init__.py`:
+   - Add `elif tool_call.tool_type == "<category>":`
+   - Call your tool's execution method
+3. **Add security check** in `SecurityChecker.get_risk_assessment()`:
+   - Return `(allowed, risk_level, reason)` tuple
+
+### Configuration
+
+Tool-specific config goes in `agent_config.py`:
+- `ShellConfig` - shell commands
+- `FileConfig` - file operations
+- `HttpConfig` - HTTP requests (allowed_hosts, blocked_hosts, default_timeout)
+- `ContainerConfig` - (future)
+- `DatabaseConfig` - (future)
+
 ## Testing Guidelines
 
 ### Test Files
-- Tests are standalone Python scripts, not pytest
-- Use `test_` prefix for test filenames
+- Tests use pytest
+- Use `test_` prefix for test filenames, test functions should be named using this format test_{function}__{scenario}
 - Include `sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))` at the top
 
 ### Test Structure
@@ -191,7 +232,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from pulsenode.module import ClassToTest
 
-async def test_feature():
+async def test_feature__happy_path():
     client = ClassToTest("test-config")
     result = await client.method()
     print(f"Result: {result}")
@@ -211,6 +252,7 @@ if __name__ == "__main__":
 
 ### Development Tools
 - `ruff`: Linting and formatting (configured in pyproject.toml)
+  - You also have a ruff_partial tool for checking specific sections.
 - Python 3.14+ required (modern type hint support)
 
 ## Common Pitfalls to Avoid
