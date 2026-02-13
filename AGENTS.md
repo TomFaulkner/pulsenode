@@ -213,6 +213,57 @@ Tool-specific config goes in `agent_config.py`:
 - `ContainerConfig` - (future)
 - `DatabaseConfig` - (future)
 
+## Channels Module Structure
+
+The channels module provides integrations for different message sources. It's organized as a directory under `src/pulsenode/agent/channels/`:
+
+```
+src/pulsenode/agent/channels/
+├── __init__.py          # Exports channel classes
+├── file_channel.py      # File-based channel for debugging/simulation
+└── <future_channels>   # (Telegram, Email, etc.)
+```
+
+### FileChannelMcp
+
+For debugging and simulation, `FileChannelMcp` reads messages from a text file:
+
+**File Format:**
+- `---` separates individual messages within a batch
+- `+++` separates groups of messages (batches)
+
+```
+message 1
+---
+message 2
+---
+message 3
++++
+batch 2 message 1
+---
+batch 2 message 2
+```
+
+**Usage:**
+```python
+from pulsenode.agent.channels import FileChannelMcp
+
+channel = FileChannelMcp(
+    file_path=Path("debug_messages.txt"),
+    name="DebugChannel",
+    type="debug",
+    identifier="test",
+    sleep_seconds=1.0,
+)
+```
+
+**Behavior:**
+- Yields messages one at a time from current batch
+- When batch exhausted, yields empty string (`""`) - signals "no more messages now"
+- Next poll continues with next batch (after `+++`)
+- When file exhausted, yields empty string forever (like real channel)
+- Auto-reloads if file is modified
+
 ## Testing Guidelines
 
 ### Test Files
