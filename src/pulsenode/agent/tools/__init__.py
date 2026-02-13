@@ -702,25 +702,29 @@ class ToolRegistry:
 
     def parse_tool_call(self, text: str) -> ToolCall | None:
         """Parse tool call from LLM text."""
-        # Look for JSON tool calls
         import re
 
-        # Pattern to match JSON tool calls
-        pattern = r'\{\s*"tool":\s*"(\w+)"\s*,\s*"action":\s*"(\w+)"\s*,\s*(.*)\}'
+        # Pattern to match JSON tool calls - accepts both "action" and "method" keys
+        pattern = (
+            r'\{\s*"tool":\s*"(\w+)"\s*,\s*"(method|action)":\s*"(\w+)"\s*,\s*(.*)\}'
+        )
         matches = re.findall(pattern, text, re.DOTALL)
 
         if not matches:
             return None
 
-        tool_type, action, args_str = matches[0]
+        tool_type, key_name, action, args_str = matches[0]
 
         try:
-            # Parse arguments
             args_str = args_str.strip()
             if args_str.endswith("}"):
-                args_str = args_str[:-1]  # Remove trailing brace
+                args_str = args_str[:-1]
 
             args = json.loads("{" + args_str + "}")
+
+            # Normalize "method" to "action" in args if needed
+            if "method" in args:
+                args["action"] = args.pop("method")
 
             return ToolCall(tool_type=tool_type, action=action, args=args)
         except json.JSONDecodeError as e:

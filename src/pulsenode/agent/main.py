@@ -224,7 +224,12 @@ Guidelines:
             context += self.tool_registry.get_available_tools()
 
         # Use capable LLM via MCP with full context
-        full_prompt = f"Task reason: {reason}\n\nContext:\n{context}\n\nNew Message: {msg}\n\nRespond appropriately."
+        full_prompt = f"""Context:
+{context}
+
+User Message: {msg}
+
+Use the available tools to complete the task if needed. When you use a tool, output the tool call as JSON (e.g., {{"tool": "http", "method": "GET", "url": "..."}}). After getting tool results, provide your final response."""
         output = await self.capable_llm.generate_response(full_prompt)
 
         if output:
@@ -306,7 +311,11 @@ Guidelines:
         )
 
         # Initialize tool executor
-        self.tool_executor = ToolExecutor(security_checker, approval_manager)
+        self.tool_executor = ToolExecutor(
+            security_checker,
+            approval_manager,
+            agent_config.tools.http,
+        )
 
         # Initialize tool registry
         self.tool_registry = ToolRegistry(self.tool_executor, self.system_capabilities)
@@ -325,8 +334,8 @@ Guidelines:
         # Simple parsing - look for JSON tool calls
         import re
 
-        # Pattern to find JSON tool calls
-        pattern = r'\{[^{}]*"tool":\s*"[^"]+"[^{}]*\}'
+        # Pattern to find JSON tool calls - more permissive for URLs and nested content
+        pattern = r'\{"tool":\s*"[^"]+"(?:,\s*"[^"]+":\s*"[^"]+")*\}'
 
         tool_calls = re.findall(pattern, output)
 
