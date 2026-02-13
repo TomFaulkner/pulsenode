@@ -20,6 +20,7 @@ from pulsenode.agent.tools import (
     ApprovalManager,
     ToolRegistry,
 )
+from pulsenode.agent.channels import FileChannelMcp
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -197,7 +198,15 @@ class Agent:
 
     async def triage_message(self, msg: str) -> TriageResponse:
         # Prompt for cheap LLM: Keep short for low cost
-        prompt = f"Message: {msg}\nIs action needed? Respond JSON: {{'needed': bool, 'reason': str}}"
+        prompt = f"""Message: {msg}
+
+Is action needed? Respond JSON: {{'needed': bool, 'reason': str}}
+
+Guidelines:
+- Questions asking for information (weather, facts, calculations) -> needed: true
+- User providing a URL to fetch data from -> needed: true
+- Greetings -> needed: false
+- Simple acknowledgments -> needed: false"""
         response = await self.triage_llm.generate_triage_response(prompt)
         return {"needed": response.needed, "reason": response.reason}
 
@@ -368,18 +377,12 @@ async def main():
     )
     context = Context(now=datetime.now(UTC))
     channels = [
-        ChannelMcp(
-            mcp_url="http://your-mcp-server/channels/telegram",
-            name="TelegramChannel",
-            type="telegram",
-            identifier="chat_id_123",
-            fake_messages=True,
-        ),
-        ChannelMcp(
-            mcp_url="http://your-mcp-server/channels/email",
-            name="EmailChannel",
-            type="email",
-            identifier="email",
+        FileChannelMcp(
+            file_path=Path("debug_messages.txt"),
+            name="DebugChannel",
+            type="debug",
+            identifier="test",
+            sleep_seconds=1.0,
         ),
     ]
     agent = Agent(

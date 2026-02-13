@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncGenerator
 
 from structlog import get_logger
 
@@ -19,6 +19,7 @@ class FileChannelMcp:
     type: str = "file"
     identifier: str = ""
     sleep_seconds: float = 3.0
+    thread_id: str | None = None  # For threaded channels (email threads, etc.)
 
     _batch_index: int = field(default=0, init=False, repr=False)
     _message_index: int = field(default=0, init=False, repr=False)
