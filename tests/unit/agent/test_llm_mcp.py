@@ -11,9 +11,11 @@ from pulsenode.agent.llm_mcp import LlmMcp, TriageResponse
 @pytest.fixture
 def llm_mcp():
     """Create a LlmMcp instance for testing."""
-    return LlmMcp(
+    mcp = LlmMcp(
         mcp_url="http://localhost:8000/mcp", auth_token="test-token", max_tokens=100
     )
+    mcp.session_id = "test-session-id"
+    return mcp
 
 
 @pytest.mark.unit
@@ -34,9 +36,9 @@ class TestLlmMcp:
     async def test_generate_response_success(self, llm_mcp):
         """Test successful response generation."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {"content": [{"text": "Test response"}]}
-        }
+        mock_response.text = (
+            'data: {"result": {"content": [{"type": "text", "text": "Test response"}]}}'
+        )
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -45,20 +47,14 @@ class TestLlmMcp:
 
             result = await llm_mcp.generate_response("Hello, test!")
 
-            assert result == "Test response"
+            assert result.content == "Test response"
             mock_client.post.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_generate_triage_response_needed(self, llm_mcp):
         """Test triage response when action is needed."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {
-                "content": [
-                    {"text": "ACTION_NEEDED: This requires immediate attention"}
-                ]
-            }
-        }
+        mock_response.text = 'data: {"result": {"content": [{"type": "text", "text": "ACTION_NEEDED: This requires immediate attention"}]}}'
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -74,9 +70,7 @@ class TestLlmMcp:
     async def test_generate_triage_response_not_needed(self, llm_mcp):
         """Test triage response when no action is needed."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {"content": [{"text": "NO_ACTION: This is just a notification"}]}
-        }
+        mock_response.text = 'data: {"result": {"content": [{"type": "text", "text": "No triage required for this notification"}]}}'
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -89,12 +83,28 @@ class TestLlmMcp:
             assert "notification" in result.reason.lower()
 
     @pytest.mark.asyncio
+    async def test_generate_triage_response_json_format(self, llm_mcp):
+        """Test triage response with proper JSON format from LLM."""
+        mock_response = MagicMock()
+        mock_response.text = 'data: {"result": {"content": [{"type": "text", "text": "{\\"needed\\": true, \\"reason\\": \\"This is urgent\\"}"}]}}'
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+
+            result = await llm_mcp.generate_triage_response("Urgent message")
+
+            assert result.needed is True
+            assert result.reason == "This is urgent"
+
+    @pytest.mark.asyncio
     async def test_chat_with_llm_default_provider(self, llm_mcp):
         """Test chat with LLM using default provider."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {"content": [{"text": "Chat response"}]}
-        }
+        mock_response.text = (
+            'data: {"result": {"content": [{"type": "text", "text": "Chat response"}]}}'
+        )
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
@@ -110,16 +120,11 @@ class TestLlmMcp:
     async def test_chat_with_llm_specific_provider(self, llm_mcp):
         """Test chat with LLM using specific provider."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {"content": [{"text": "Chat response"}]}
-        }
+        mock_response.text = 'data: {"result": {"content": [{"type": "text", "text": "Provider-specific response"}]}}'
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client_class.return_value.__aenter__.return_value = mock_client
-            mock_response.json.return_value = {
-                "result": {"content": [{"text": "Provider-specific response"}]}
-            }
             mock_client.post.return_value = mock_response
 
             result = await llm_mcp.chat_with_llm(
@@ -143,33 +148,26 @@ class TestLlmMcp:
     @pytest.mark.asyncio
     async def test_mcp_request_error_handling(self, llm_mcp):
         """Test error handling in MCP requests."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {"content": [{"text": "Chat response"}]}
-        }
-
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client_class.return_value.__aenter__.return_value = mock_client
             mock_client.post.side_effect = Exception("Network error")
 
-            with pytest.raises(Exception, match="Network error"):
-                await llm_mcp.generate_response("Test message")
+            result = await llm_mcp.generate_response("Test message")
+
+            assert "Network error" in result.content
 
     @pytest.mark.asyncio
     async def test_empty_response_handling(self, llm_mcp):
         """Test handling of empty or malformed responses."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "result": {"content": [{"text": "Chat response"}]}
-        }
+        mock_response.text = 'data: {"result": {"content": []}}'
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client_class.return_value.__aenter__.return_value = mock_client
-            mock_response.json.return_value = {"result": {"content": []}}
             mock_client.post.return_value = mock_response
 
             result = await llm_mcp.generate_response("Test")
 
-            assert result == ""  # Should return empty string for no content
+            assert result.content == "No response generated"

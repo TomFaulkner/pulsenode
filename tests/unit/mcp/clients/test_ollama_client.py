@@ -231,9 +231,10 @@ class TestOllamaClient:
 
                 assert ollama_client.metrics["timeouts"] > 0
 
-    def test_switch_model(self, ollama_client):
+    @pytest.mark.asyncio
+    async def test_switch_model(self, ollama_client):
         """Test model switching."""
-        result = ollama_client.switch_model("new-model")
+        result = await ollama_client.switch_model("new-model")
 
         assert ollama_client.model == "new-model"
         assert result["model"] == "new-model"

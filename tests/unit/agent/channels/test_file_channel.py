@@ -179,4 +179,4 @@ async def test_file_channel_mcp__defaults():
     assert channel.name == "FileChannel"
     assert channel.type == "file"
     assert channel.identifier == ""
-    assert channel.sleep_seconds == 3.0
+    assert channel.sleep_seconds == 0.2

@@ -75,16 +75,12 @@ class TestAgentMain:
         for param in required_params:
             assert param in params
 
-    def test_heartbeat_logging(self):
+    def test_heartbeat_logging(self, monkeypatch):
         """Test heartbeat logging functionality."""
-        with pytest.MonkeyPatch() as m:
-            # Mock the logger
-            mock_logger = MagicMock()
-            m.setattr("pulsenode.agent.main.logger", mock_logger)
+        mock_logger = MagicMock()
+        monkeypatch.setattr("pulsenode.agent.main.logger", mock_logger)
 
-            # Import and check if heartbeat method exists
-            from pulsenode.agent.main import Agent
+        from pulsenode.agent.main import Agent
 
-            # Verify Agent has heartbeat method
-            assert hasattr(Agent, "heartbeat")
-            assert callable(getattr(Agent, "heartbeat"))
+        assert hasattr(Agent, "heartbeat")
+        assert callable(getattr(Agent, "heartbeat"))
