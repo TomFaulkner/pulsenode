@@ -25,6 +25,7 @@ class LLMRequest(BaseModel):
     stream: bool = True
     temperature: float = Field(0.7, ge=0.0, le=1.0)
     max_tokens: int | None = None
+    tools: list[dict[str, Any]] | None = None
 
 
 class LLMResponse(BaseModel):
@@ -90,6 +91,7 @@ class LLMProxyServer:
         stream: bool = True,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Chat with LLM provider"""
         client = self.get_client(provider)
@@ -108,6 +110,7 @@ class LLMProxyServer:
                 stream=stream,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
             ):
                 yield chunk
 
@@ -204,16 +207,20 @@ async def llm_chat(request: LLMRequest, ctx: Context) -> str:
         request: Chat request with messages, provider selection, and generation parameters
 
     Returns:
-        Response from the LLM provider
+        Response from the LLM provider (JSON with content and optionally tool_calls)
     """
+
     logger.info(
         "llm_chat_request",
         provider=request.provider or settings.llm_proxy.provider_default,
         model=request.model or settings.llm_proxy.model,
         num_messages=len(request.messages),
+        has_tools=request.tools is not None,
+        num_tools=len(request.tools) if request.tools else 0,
     )
 
     full_response = []
+    tool_calls = []
 
     async for chunk in llm_server.chat(
         messages=request.messages,
@@ -222,12 +229,19 @@ async def llm_chat(request: LLMRequest, ctx: Context) -> str:
         stream=request.stream,
         temperature=request.temperature,
         max_tokens=request.max_tokens,
+        tools=request.tools,
     ):
         # Extract content based on provider format
         if "message" in chunk:
             content = chunk["message"].get("content", "")
+            # Extract tool_calls from Ollama response
+            if "tool_calls" in chunk.get("message", {}):
+                tool_calls.extend(chunk["message"]["tool_calls"])
         elif "choices" in chunk:
             content = chunk["choices"][0].get("delta", {}).get("content", "")
+            # Extract tool_calls from OpenAI-compatible response
+            if "tool_calls" in chunk.get("choices", [{}])[0]:
+                tool_calls.extend(chunk["choices"][0].get("tool_calls", []))
         else:
             content = str(chunk)
 
@@ -237,7 +251,41 @@ async def llm_chat(request: LLMRequest, ctx: Context) -> str:
         if request.stream:
             await ctx.info(content)
 
-    return "".join(full_response)
+    response_text = "".join(full_response)
+
+    # If response is already valid JSON, return it directly (Option A)
+    # Otherwise, wrap in our standard format
+    try:
+        parsed_response = json.loads(response_text)
+        if isinstance(parsed_response, dict):
+            # It's valid JSON - return as-is with tool_calls added
+            # We need to merge tool_calls into the response
+            parsed_response["tool_calls"] = tool_calls
+            response = json.dumps(parsed_response)
+            logger.debug(
+                "llm_chat_response",
+                provider=request.provider,
+                model=request.model,
+                response=response,
+            )
+            return response
+    except json.JSONDecodeError:
+        pass
+
+    # Not valid JSON - wrap the string
+    response = json.dumps(
+        {
+            "response": response_text,
+            "tool_calls": tool_calls,
+        }
+    )
+    logger.debug(
+        "llm_chat_response",
+        provider=request.provider,
+        model=request.model,
+        response=response,
+    )
+    return response
 
 
 @llm_proxy_mcp.tool()

@@ -20,6 +20,7 @@ from structlog import get_logger
 
 from pulsenode.agent.agent_config import HttpConfig
 from pulsenode.agent.tools.http import HttpTool
+from pulsenode.agent.tools.parsers import OpenAIToolCallParser, ToolCallParser
 
 logger = get_logger(__name__)
 
@@ -695,74 +696,108 @@ class ToolRegistry:
     """Registry for available tools."""
 
     def __init__(
-        self, tool_executor: ToolExecutor, system_capabilities: dict | None = None
+        self,
+        tool_executor: ToolExecutor,
+        system_capabilities: dict | None = None,
+        parser: ToolCallParser | None = None,
     ):
         self.tool_executor = tool_executor
         self.system_capabilities = system_capabilities or {}
+        self.parser = parser or OpenAIToolCallParser()
+
+    def set_parser(self, parser: ToolCallParser) -> None:
+        """Set the tool call parser."""
+        self.parser = parser
+
+    def parse_tool_calls(self, text: str) -> list[ToolCall]:
+        """Parse tool calls from LLM text using the configured parser."""
+        parsed_calls = self.parser.parse(text)
+
+        tool_calls = []
+        for parsed in parsed_calls:
+            try:
+                func_name = parsed.get("name", "")
+                arguments_str = parsed.get("arguments", "{}")
+
+                if not func_name:
+                    continue
+
+                if func_name.endswith("_request"):
+                    tool_type = func_name[:-8]
+                else:
+                    tool_type = func_name
+
+                arguments = json.loads(arguments_str)
+
+                action = arguments.pop("action", arguments.pop("method", ""))
+
+                tool_calls.append(
+                    ToolCall(
+                        tool_type=tool_type,
+                        action=action,
+                        args=arguments,
+                    )
+                )
+            except json.JSONDecodeError:
+                continue
+
+        return tool_calls
 
     def parse_tool_call(self, text: str) -> ToolCall | None:
-        """Parse tool call from LLM text."""
-        import re
+        """Parse a single tool call from LLM text (legacy compatibility)."""
+        calls = self.parse_tool_calls(text)
+        return calls[0] if calls else None
 
-        # Pattern to match JSON tool calls - accepts both "action" and "method" keys
-        pattern = (
-            r'\{\s*"tool":\s*"(\w+)"\s*,\s*"(method|action)":\s*"(\w+)"\s*,\s*(.*)\}'
-        )
-        matches = re.findall(pattern, text, re.DOTALL)
+    async def execute_tool_calls(self, text: str) -> list[ToolResult]:
+        """Parse and execute all tool calls from text."""
+        tool_calls = self.parse_tool_calls(text)
+        if not tool_calls:
+            return [ToolResult(success=False, error="No valid tool call found in text")]
 
-        if not matches:
-            return None
+        results = []
+        for tool_call in tool_calls:
+            result = await self.tool_executor.execute_tool_call(tool_call)
+            results.append(result)
 
-        tool_type, key_name, action, args_str = matches[0]
-
-        try:
-            args_str = args_str.strip()
-            if args_str.endswith("}"):
-                args_str = args_str[:-1]
-
-            args = json.loads("{" + args_str + "}")
-
-            # Normalize "method" to "action" in args if needed
-            if "method" in args:
-                args["action"] = args.pop("method")
-
-            return ToolCall(tool_type=tool_type, action=action, args=args)
-        except json.JSONDecodeError as e:
-            logger.warning("tool_parse_error", text=text, error=str(e))
-            return None
+        return results
 
     async def execute_tool_from_text(self, text: str) -> ToolResult:
-        """Parse and execute tool call from text."""
-        tool_call = self.parse_tool_call(text)
-        if not tool_call:
-            return ToolResult(success=False, error="No valid tool call found in text")
-
-        return await self.tool_executor.execute_tool_call(tool_call)
+        """Parse and execute tool call from text (legacy compatibility)."""
+        results = await self.execute_tool_calls(text)
+        return (
+            results[0]
+            if results
+            else ToolResult(success=False, error="No tool calls found")
+        )
 
     def get_available_tools(self) -> str:
-        """Get description of available tools."""
-        return (
-            """
+        """Get description of available tools using the configured parser."""
+        tool_definitions = self.parser.format_tools_for_prompt()
+
+        return f"""
 ## Available Tools
 
-You can use the following tools by outputting JSON:
+You can use the available tools to accomplish the user's request.
 
-### Shell Tools
-{"tool": "shell", "action": "exec", "command": "<command>", "working_dir": "<optional_path>"}
+When you need to use a tool, output a JSON object with a "tool_calls" array:
 
-### File Tools
-{"tool": "file", "action": "read|write|append|delete|list|exists", "path": "<path>", "content": "<optional_content>"}
+```json
+{{
+  "tool_calls": [
+    {{
+      "id": "call_1",
+      "type": "function",
+      "function": {{
+        "name": "http_request",
+        "arguments": {{"method": "GET", "url": "https://example.com"}}
+      }}
+    }}
+  ]
+}}
+```
 
-### HTTP Tools
-{"tool": "http", "method": "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS", "url": "<url>", "headers": {}, "body": "<optional_body>", "timeout": <optional_seconds>}
-
-### Container Tools (Coming Soon)
-{"tool": "container", "image": "debian:latest", "command": "<command>"}
-
-### System Capabilities
-The following utilities are available: """
-            + ", ".join(self.system_capabilities.get("available_utilities", []))
-            + """
+Available tools (OpenAI function calling format):
+{tool_definitions}
 
 ### Security Notes
 - Sensitive files (.env, *secret*, *key*, *password*, *token*) require approval
@@ -770,6 +805,9 @@ The following utilities are available: """
 - File operations restricted to allowed directories
 - Large files (>100KB) will be saved to temporary location
 
-When you need to use a tool, output JSON and wait for the result before continuing.
+After calling tools, include the results in your response.
 """
-        )
+
+    def get_tool_definitions(self) -> list[dict[str, Any]]:
+        """Get tool definitions as a list for LLM API calls."""
+        return self.parser.format_tools_for_prompt_list()

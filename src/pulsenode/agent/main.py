@@ -11,7 +11,7 @@ import structlog
 
 from pulsenode.config.settings import settings, create_default_settings, Settings
 from pulsenode.agent.llm_mcp import LlmMcp
-from pulsenode.agent.sessions import SessionManager, Session
+from pulsenode.agent.sessions import SessionManager
 from pulsenode.agent.memory import MemoryManager, MemoryTools
 from pulsenode.agent.agent_config import AgentConfigManager
 from pulsenode.agent.tools import (
@@ -20,6 +20,7 @@ from pulsenode.agent.tools import (
     ApprovalManager,
     ToolRegistry,
 )
+from pulsenode.agent.tools.parsers import OpenAIToolCallParser
 from pulsenode.agent.channels import FileChannelMcp
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,9 @@ class Agent:
                     response = await self.execute_task(
                         session_id, msg, is_action_needed["reason"]
                     )
+                    # Ensure response is a string (handle case where LlmResponse is returned)
+                    if not isinstance(response, str):
+                        response = str(response)
                     logger.info(
                         f"execute_task Response: {response}", session_id=session_id
                     )
@@ -227,6 +231,8 @@ Guidelines:
         return {"needed": response.needed, "reason": response.reason}
 
     async def execute_task(self, session_id: str, msg: str, reason: str) -> str:
+        """Execute a task using the capable LLM with tool calling support."""
+
         # Get session
         session = self.session_manager.sessions.get(session_id)
         if not session:
@@ -235,33 +241,124 @@ Guidelines:
         # Get context including all memory tiers
         context = await self.memory_manager.get_context_for_llm(session, msg)
 
-        # Add tool information to context
+        # Get tool definitions from registry
+        tools = None
         if self.tool_registry:
-            context += self.tool_registry.get_available_tools()
+            tools = self.tool_registry.get_tool_definitions()
 
-        # Use capable LLM via MCP with full context
-        full_prompt = f"""Context:
-{context}
+        # Build the prompt
+        prompt = f"""{context}
 
 User Message: {msg}
 
-Use the available tools to complete the task if needed. When you use a tool, output the tool call as JSON (e.g., {{"tool": "http", "method": "GET", "url": "..."}}). After getting tool results, provide your final response as plain text. Do NOT include any triage-style JSON like {{"needed": true, "reason": "..."}}."""
-        output = await self.capable_llm.generate_response(full_prompt)
+You are a helpful assistant. Use the available tools to answer the user's question.
+IMPORTANT: Output ONLY valid JSON without any markdown formatting, backticks, or code blocks.
+When you need to use a tool, respond ONLY with the JSON object - no explanations, no text before or after.
+Example correct output: {{"tool_calls": [{{"id": "call_1", "type": "function", "function": {{"name": "http_request", "arguments": {{"method": "GET", "url": "https://example.com"}}}}}}]}}
+After getting tool results, answer the user's question using the data in plain English."""
 
-        if output:
-            # Add to session memory
-            session.add_message("user", msg)
-            session.add_message("agent", output)
+        tool_results_text = ""
+        max_tool_calls = 5
 
-            # Save session
-            await self.session_manager.save_session(session)
+        for iteration in range(max_tool_calls):
+            # Call LLM
+            full_prompt = prompt
+            if tool_results_text:
+                full_prompt = f"{prompt}\n\nTool Results:\n{tool_results_text}"
 
-            # Handle tool calls in output
-            if self.tool_registry:
-                output = await self._handle_tool_calls(session, output)
+            llm_response = await self.capable_llm.generate_response(
+                prompt=full_prompt,
+                tools=tools,
+            )
 
-            return output
-        return "Error executing task."
+            logger.debug(
+                "llm_response_received", response_type=type(llm_response).__name__
+            )
+
+            if isinstance(llm_response, str):
+                logger.warning(
+                    "generate_response_returned_string", response=llm_response[:200]
+                )
+                return llm_response
+
+            content = llm_response.content
+            tool_calls = llm_response.tool_calls
+
+            logger.debug(
+                "response_content",
+                content=content[:100] if content else "",
+                tool_calls_count=len(tool_calls),
+            )
+
+            if not tool_calls:
+                # No more tool calls, return the final response
+                session.add_message("user", msg)
+                session.add_message("agent", content)
+                await self.session_manager.save_session(session)
+                logger.info(
+                    "returning_final_response", content=content[:100] if content else ""
+                )
+                return content
+
+            # Execute tool calls
+            logger.info("executing_tool_calls", count=len(tool_calls))
+            tool_results = []
+            for tool_call in tool_calls:
+                func = tool_call.get("function", {})
+                func_name = func.get("name", "")
+                func_args = func.get("arguments", "{}")
+
+                if isinstance(func_args, str):
+                    try:
+                        func_args = json.loads(func_args)
+                    except json.JSONDecodeError:
+                        func_args = {}
+
+                logger.debug("executing_tool", func_name=func_name, args=func_args)
+                tool_result = await self._execute_tool(func_name, func_args)
+                tool_results.append(f"{func_name}: {tool_result}")
+                logger.info(
+                    "tool_executed",
+                    tool=func_name,
+                    result=tool_result[:100] if tool_result else "",
+                )
+
+            tool_results_text = "\n".join(tool_results)
+            logger.debug("tool_results_text", results=tool_results_text[:200])
+
+        # Max iterations reached or final return
+        final_content = content if content else "No response generated"
+        logger.info("returning_response", content=final_content[:100])
+        return final_content
+
+    async def _execute_tool(self, func_name: str, args: dict) -> str:
+        """Execute a tool and return the result."""
+        if not self.tool_registry:
+            return "Error: Tool registry not initialized"
+
+        # Map function name to tool type
+        # e.g., "http_request" -> tool_type="http", action from args
+        if func_name.endswith("_request"):
+            tool_type = func_name[:-8]
+        else:
+            tool_type = func_name
+
+        action = args.pop("action", args.pop("method", ""))
+
+        from pulsenode.agent.tools import ToolCall
+
+        tool_call = ToolCall(
+            tool_type=tool_type,
+            action=action,
+            args=args,
+        )
+
+        result = await self.tool_registry.tool_executor.execute_tool_call(tool_call)
+
+        if result.success:
+            return result.output
+        else:
+            return f"Error: {result.error}"
 
     def call_tool(self, tool: str) -> str:
         # Example: MCP tool call
@@ -333,44 +430,14 @@ Use the available tools to complete the task if needed. When you use a tool, out
             agent_config.tools.http,
         )
 
-        # Initialize tool registry
-        self.tool_registry = ToolRegistry(self.tool_executor, self.system_capabilities)
+        # Initialize tool registry with OpenAI-style parser
+        self.tool_registry = ToolRegistry(
+            self.tool_executor,
+            self.system_capabilities,
+            parser=OpenAIToolCallParser(),
+        )
 
         logger.info("tools_initialized", agent_name=self.agent_name)
-
-    async def _handle_tool_calls(self, session: Session, output: str) -> str:
-        """Handle tool calls in LLM output."""
-        if not self.tool_registry:
-            return output
-
-        import json
-
-        remaining_text = output
-
-        for line in output.split("\n"):
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            try:
-                parsed = json.loads(stripped)
-                if isinstance(parsed, dict) and "tool" in parsed:
-                    tool_call_json = json.dumps(parsed)
-                    tool_result = await self.tool_registry.execute_tool_from_text(
-                        tool_call_json
-                    )
-
-                    if tool_result.success:
-                        result_text = f"Tool result: {tool_result.output}"
-                    else:
-                        result_text = f"Tool error: {tool_result.error}"
-
-                    remaining_text = remaining_text.replace(tool_call_json, result_text)
-
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-        return remaining_text
 
     async def _check_session_rollover(self):
         """Check if any sessions need to be archived."""
@@ -390,10 +457,13 @@ async def main():
         mcp_url=MCP_TRIAGE_LLM_URL,
         auth_token=MCP_AUTH_TOKEN,
         max_tokens=50,
-        model="llama3.2",
+        model="qwen2.5-coder:7b",
     )
     capable_llm = LlmMcp(
-        mcp_url=MCP_CAPABLE_LLM_URL, auth_token=MCP_AUTH_TOKEN, max_tokens=500
+        mcp_url=MCP_CAPABLE_LLM_URL,
+        auth_token=MCP_AUTH_TOKEN,
+        max_tokens=500,
+        model="qwen2.5-coder:7b",
     )
     context = Context(now=datetime.now(UTC))
     channels = [

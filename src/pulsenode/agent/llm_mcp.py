@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 from pydantic import BaseModel
 import httpx
@@ -19,13 +19,21 @@ class TriageResponse(BaseModel):
 
 
 @dataclass
+class LlmResponse:
+    """Response from LLM including content and optional tool calls."""
+
+    content: str
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class LlmMcp:
     mcp_url: str
     auth_token: str
     max_tokens: int
     session_id: str = ""
     provider: str = "ollama"
-    model: str = "llama3.2"
+    model: str = "qwen2.5-coder:7b"
     temperature: float = 0.7
     triage_max_tokens: int = 100
     triage_temperature: float = 0.3
@@ -106,7 +114,11 @@ class LlmMcp:
             messages = [
                 {
                     "role": "user",
-                    "content": f"Determine if this message needs action: {prompt}",
+                    "content": f"""Determine if this message needs action. Output ONLY valid JSON without markdown formatting, backticks, or code blocks.
+
+Example correct output: {{"needed": true, "reason": "The message asks for information"}}
+
+Message to evaluate: {prompt}""",
                 }
             ]
 
@@ -146,25 +158,32 @@ class LlmMcp:
 
                 # Handle SSE response
                 result = self._parse_sse_response(response.text)
+                logger.debug("triage_raw_response", response=result)
 
                 # Check for error in result
                 if "error" in result:
                     raise Exception(f"MCP Error: {result['error']}")
 
                 result_data = result.get("result", {})
-                content = result_data.get("content", [])
 
-                # Extract text from content array
+                # MCP returns: {"content": [{"type": "text", "text": "..."}], "structuredContent": {"result": "..."}}
+                # Extract the actual text content
                 text_content = ""
-                if isinstance(content, list) and content:
-                    if content[0].get("type") == "text":
-                        text_content = content[0].get("text", "")
-                elif isinstance(content, str):
-                    text_content = content
-                else:
-                    text_content = str(result_data) or ""
 
-                # Parse the response - prefer JSON, fall back to text matching
+                # Try to get from structuredContent first
+                structured = result_data.get("structuredContent", {})
+                if structured:
+                    raw_text = structured.get("result", "")
+                    if raw_text:
+                        text_content = raw_text
+
+                # Fall back to content array
+                if not text_content:
+                    content = result_data.get("content", [])
+                    if isinstance(content, list) and content:
+                        text_content = content[0].get("text", "")
+
+                # Parse the JSON response
                 try:
                     parsed = json.loads(text_content)
                     if isinstance(parsed, dict):
@@ -192,11 +211,23 @@ class LlmMcp:
                 reason=f"Error calling LLM proxy: {str(e)}. Defaulting to action needed.",
             )
 
-    async def generate_response(self, prompt: str) -> str:
-        """Generate a response using the LLM proxy."""
+    async def generate_response(
+        self,
+        prompt: str,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LlmResponse:
+        """Generate a response using the LLM proxy.
+
+        Args:
+            prompt: The prompt to send to the LLM
+            tools: Optional list of tool definitions in OpenAI format
+
+        Returns:
+            LlmResponse with content and optional tool_calls
+        """
         if not settings.llm_proxy.enabled:
             # Mock implementation when proxy is disabled
-            return f"Mock response: {prompt[:50]}..."
+            return LlmResponse(content=f"Mock response: {prompt[:50]}...")
 
         try:
             # Ensure session is initialized
@@ -212,6 +243,20 @@ class LlmMcp:
             if self.auth_token:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
 
+            # Build request arguments
+            request_args = {
+                "request": {
+                    "messages": messages,
+                    "provider": self.provider,
+                    "model": self.model,
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens,
+                    "stream": False,
+                }
+            }
+            if tools:
+                request_args["request"]["tools"] = tools
+
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.mcp_url}",
@@ -221,16 +266,7 @@ class LlmMcp:
                         "method": "tools/call",
                         "params": {
                             "name": "llm_llm_chat",
-                            "arguments": {
-                                "request": {
-                                    "messages": messages,
-                                    "provider": self.provider,
-                                    "model": self.model,
-                                    "temperature": self.temperature,
-                                    "max_tokens": self.max_tokens,
-                                    "stream": False,
-                                }
-                            },
+                            "arguments": request_args,
                         },
                         "id": "generate-req-001",
                     },
@@ -246,19 +282,44 @@ class LlmMcp:
                     raise Exception(f"MCP Error: {result['error']}")
 
                 result_data = result.get("result", {})
-                content = result_data.get("content", [])
 
-                # Extract text from content array if needed
-                if isinstance(content, list) and content:
-                    if content[0].get("type") == "text":
-                        return content[0].get("text", "No response generated")
-                elif isinstance(content, str):
-                    return content
+                # MCP returns: {"content": [{"type": "text", "text": "..."}], "structuredContent": {...}}
+                # Extract the actual text content and tool_calls
+                response_text = ""
+                tool_calls = []
 
-                return str(result_data) or "No response generated"
+                # Try to get from structuredContent first
+                structured = result_data.get("structuredContent", {})
+                if structured:
+                    raw_text = structured.get("result", "")
+                    if raw_text:
+                        try:
+                            parsed = json.loads(raw_text)
+                            if isinstance(parsed, dict):
+                                # This is the actual LLM response with tool_calls
+                                content = parsed.get(
+                                    "content", parsed.get("response", "")
+                                )
+                                tool_calls = parsed.get("tool_calls", [])
+                                return LlmResponse(
+                                    content=content, tool_calls=tool_calls
+                                )
+                        except json.JSONDecodeError:
+                            response_text = raw_text
+
+                # Fall back to content array
+                if not response_text:
+                    content = result_data.get("content", [])
+                    if isinstance(content, list) and content:
+                        response_text = content[0].get("text", "")
+
+                return LlmResponse(
+                    content=response_text if response_text else "No response generated",
+                    tool_calls=tool_calls,
+                )
 
         except Exception as e:
-            return f"Error generating response: {str(e)}"
+            return LlmResponse(content=f"Error generating response: {str(e)}")
 
     async def chat_with_llm(
         self,

@@ -80,9 +80,18 @@ class OllamaClient:
         temperature: float = 0.7,
         max_tokens: int | None = None,
         read_timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Send chat messages to Ollama and stream responses.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            stream: Whether to stream the response
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            read_timeout: Custom read timeout
+            tools: List of tool definitions in OpenAI format
         """
         request_data = {
             "model": self.model,
@@ -92,6 +101,8 @@ class OllamaClient:
         }
         if max_tokens:
             request_data["options"]["max_tokens"] = max_tokens
+        if tools:
+            request_data["tools"] = tools
 
         self.metrics["requests"] += 1
 
@@ -200,12 +211,13 @@ class OllamaClient:
         stream: bool = True,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Generate text using Ollama (simplified chat interface)
         """
         messages = [{"role": "user", "content": prompt}]
-        return self.chat(messages, stream, temperature, max_tokens)
+        return self.chat(messages, stream, temperature, max_tokens, tools=tools)
 
     async def list_models(self) -> list[dict[str, Any]]:
         """List available models from Ollama"""

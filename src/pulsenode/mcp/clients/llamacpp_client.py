@@ -74,9 +74,18 @@ class LlamaCppClient:
         temperature: float = 0.7,
         max_tokens: int | None = None,
         read_timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Send chat messages to llama.cpp server and stream responses.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            stream: Whether to stream the response
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            read_timeout: Custom read timeout
+            tools: List of tool definitions in OpenAI format
         """
         request_data = {
             "model": self.model,
@@ -86,6 +95,8 @@ class LlamaCppClient:
         }
         if max_tokens:
             request_data["max_tokens"] = max_tokens
+        if tools:
+            request_data["tools"] = tools
 
         self.metrics["requests"] += 1
 

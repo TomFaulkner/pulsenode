@@ -18,7 +18,7 @@ class FileChannelMcp:
     name: str = "FileChannel"
     type: str = "file"
     identifier: str = ""
-    sleep_seconds: float = 1.0
+    sleep_seconds: float = 0.2
     thread_id: str | None = None  # For threaded channels (email threads, etc.)
 
     _batch_index: int = field(default=0, init=False, repr=False)
