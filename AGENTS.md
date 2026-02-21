@@ -9,7 +9,7 @@ Development guidelines for agentic coding agents working on pulsenode codebase.
 source .venv/bin/activate && uv sync
 ```
 
-### Code Quality
+### Python Code Quality
 ```bash
 # Run linting (use this before committing)
 ruff check src/
@@ -71,7 +71,7 @@ from pulsenode.mcp.clients.ollama_client import OllamaClient
 ### Type Hints
 - Use modern union syntax: `str | None` instead of `Optional[str]`
 - Use specific imports: `from typing import AsyncGenerator` instead of `import typing`
-- Use `list[dict[str, Any]]` for complex types
+- Use `list[TypedDict]` or `list[dict[str, Any]]` for complex types
 - Always annotate public methods and async functions
 
 ```python
@@ -89,6 +89,7 @@ async def chat(
 - **Functions/Methods**: snake_case (`chat_with_llm`, `get_headers`)
 - **Private methods**: prefix with underscore (`_get_headers`, `_parse_response`)
 - **Constants**: UPPER_SNAKE_CASE (`DEFAULT_TIMEOUT`, `MAX_RETRIES`)
+- **Tests**: `test_{function}__{scenario}` (`test_chat_with_llm__happy_path`)
 
 ### Error Handling
 ```python
@@ -195,6 +196,8 @@ src/pulsenode/agent/tools/
 | `HttpTool` | `tools/http.py` | HTTP request execution |
 | `HttpConfig` | `agent_config.py` | HTTP tool configuration |
 
+More in README.md
+
 ### Adding a New Tool Category
 
 1. **Create tool class** in `src/pulsenode/agent/tools/<category>.py`
@@ -299,7 +302,6 @@ if __name__ == "__main__":
 - `httpx`: Async HTTP client with timeout support
 - `pydantic`: Data validation and serialization
 - `structlog`: Structured logging
-- `python-dotenv`: Environment variable management
 
 ### Development Tools
 - `ruff`: Linting and formatting (configured in pyproject.toml)
