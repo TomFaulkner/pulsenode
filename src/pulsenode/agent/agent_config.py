@@ -83,6 +83,30 @@ class HttpConfig:
 
 
 @dataclass
+class LlmConfig:
+    """LLM configuration for an agent."""
+
+    mcp_url: str = "http://localhost:8000/mcp"
+    auth_token: str = ""
+    triage_model: str = "qwen2.5-coder:7b"
+    capable_model: str = "qwen2.5-coder:7b"
+    triage_max_tokens: int = 50
+    capable_max_tokens: int = 500
+    temperature: float = 0.7
+    triage_temperature: float = 0.3
+
+
+@dataclass
+class ChannelDefinition:
+    """Channel configuration for an agent."""
+
+    type: str  # "file", "telegram", "email", etc.
+    identifier: str  # "test", "chat_123", "email@example.com"
+    file_path: str = ""  # For file channel
+    sleep_seconds: float = 0.2  # For file channel polling
+
+
+@dataclass
 class ToolsConfig:
     """Tools configuration for an agent."""
 
@@ -104,6 +128,8 @@ class AgentConfig:
     enabled: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    llm: LlmConfig = field(default_factory=LlmConfig)
+    channels: list[ChannelDefinition] = field(default_factory=list)
 
 
 class AgentConfigManager:
@@ -183,6 +209,32 @@ class AgentConfigManager:
                 ),
             )
 
+            # Parse LLM config
+            llm_data = data.get("llm", {})
+            llm_config = LlmConfig(
+                mcp_url=llm_data.get("mcp_url", "http://localhost:8000/mcp"),
+                auth_token=llm_data.get("auth_token", ""),
+                triage_model=llm_data.get("triage_model", "qwen2.5-coder:7b"),
+                capable_model=llm_data.get("capable_model", "qwen2.5-coder:7b"),
+                triage_max_tokens=llm_data.get("triage_max_tokens", 50),
+                capable_max_tokens=llm_data.get("capable_max_tokens", 500),
+                temperature=llm_data.get("temperature", 0.7),
+                triage_temperature=llm_data.get("triage_temperature", 0.3),
+            )
+
+            # Parse channels config
+            channels = []
+            channels_data = data.get("channels", [])
+            for ch_data in channels_data:
+                channels.append(
+                    ChannelDefinition(
+                        type=ch_data.get("type", "file"),
+                        identifier=ch_data.get("identifier", ""),
+                        file_path=ch_data.get("file_path", ""),
+                        sleep_seconds=ch_data.get("sleep_seconds", 0.2),
+                    )
+                )
+
             return AgentConfig(
                 name=agent_name,
                 purpose=data.get("purpose", ""),
@@ -191,6 +243,8 @@ class AgentConfigManager:
                 enabled=data.get("enabled", True),
                 metadata=data.get("metadata", {}),
                 tools=tools_config,
+                llm=llm_config,
+                channels=channels,
             )
 
         except Exception as e:
@@ -244,6 +298,25 @@ class AgentConfigManager:
                 },
                 "approval_timeout_seconds": config.tools.approval_timeout_seconds,
             },
+            "llm": {
+                "mcp_url": config.llm.mcp_url,
+                "auth_token": config.llm.auth_token,
+                "triage_model": config.llm.triage_model,
+                "capable_model": config.llm.capable_model,
+                "triage_max_tokens": config.llm.triage_max_tokens,
+                "capable_max_tokens": config.llm.capable_max_tokens,
+                "temperature": config.llm.temperature,
+                "triage_temperature": config.llm.triage_temperature,
+            },
+            "channels": [
+                {
+                    "type": ch.type,
+                    "identifier": ch.identifier,
+                    "file_path": ch.file_path,
+                    "sleep_seconds": ch.sleep_seconds,
+                }
+                for ch in config.channels
+            ],
         }
 
         # Remove empty sections

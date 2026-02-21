@@ -84,7 +84,8 @@ async def test_session_archiving():
     with tempfile.TemporaryDirectory() as temp_dir:
         base_dir = Path(temp_dir)
         session_manager = SessionManager(base_dir)
-        memory_manager = MemoryManager(session_manager)
+        config_manager = AgentConfigManager(base_dir)
+        memory_manager = MemoryManager(session_manager, config_manager)
 
         # Create session and add messages
         session = await session_manager.get_or_create_session(
@@ -122,7 +123,8 @@ async def test_memory_context():
     with tempfile.TemporaryDirectory() as temp_dir:
         base_dir = Path(temp_dir)
         session_manager = SessionManager(base_dir)
-        memory_manager = MemoryManager(session_manager)
+        config_manager = AgentConfigManager(base_dir)
+        memory_manager = MemoryManager(session_manager, config_manager)
 
         # Create session with some memory
         session = await session_manager.get_or_create_session(
@@ -228,7 +230,8 @@ async def test_memory_tools():
     with tempfile.TemporaryDirectory() as temp_dir:
         base_dir = Path(temp_dir)
         session_manager = SessionManager(base_dir)
-        memory_manager = MemoryManager(session_manager)
+        config_manager = AgentConfigManager(base_dir)
+        memory_manager = MemoryManager(session_manager, config_manager)
         memory_tools = MemoryTools(memory_manager)
 
         # Create session

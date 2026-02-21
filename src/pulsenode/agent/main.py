@@ -21,7 +21,6 @@ from pulsenode.agent.tools import (
     ToolRegistry,
 )
 from pulsenode.agent.tools.parsers import OpenAIToolCallParser
-from pulsenode.agent.channels import FileChannelMcp
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -29,14 +28,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = structlog.getLogger(__name__)
-
-# Config: Replace with your MCP server details
-MCP_TRIAGE_LLM_URL = "http://localhost:8000/mcp"
-MCP_CAPABLE_LLM_URL = MCP_TRIAGE_LLM_URL
-MCP_AUTH_TOKEN = "your-mcp-token"  # Server-side auth, not API keys
-
-# Mock channel: In real, this would poll Telegram/email via MCP
-MESSAGE_QUEUE_FILE = "message_queue.json"  # Simulate incoming messages
 
 
 @dataclass
@@ -113,10 +104,10 @@ class Agent:
 
         # Initialize session and memory management
         base_dir = pulsenode_dir or Path.home() / ".pulsenode"
-        self.session_manager = SessionManager(base_dir)
-        self.memory_manager = MemoryManager(self.session_manager)
-        self.memory_tools = MemoryTools(self.memory_manager)
         self.config_manager = AgentConfigManager(base_dir)
+        self.session_manager = SessionManager(base_dir)
+        self.memory_manager = MemoryManager(self.session_manager, self.config_manager)
+        self.memory_tools = MemoryTools(self.memory_manager)
 
         # Load system capabilities for tools
         system_capabilities_file = base_dir / "system_capabilities.json"
@@ -449,40 +440,22 @@ After getting tool results, answer the user's question using the data in plain E
             if should_archive:
                 logger.info(f"Rolling over session {session.session_id}: {reason}")
                 await self.memory_manager.archive_and_create_new_session(session)
-                # The session reference in session_manager will be updated
 
 
 async def main():
-    triage_llm = LlmMcp(
-        mcp_url=MCP_TRIAGE_LLM_URL,
-        auth_token=MCP_AUTH_TOKEN,
-        max_tokens=50,
-        model="qwen2.5-coder:7b",
-    )
-    capable_llm = LlmMcp(
-        mcp_url=MCP_CAPABLE_LLM_URL,
-        auth_token=MCP_AUTH_TOKEN,
-        max_tokens=500,
-        model="qwen2.5-coder:7b",
-    )
-    context = Context(now=datetime.now(UTC))
-    channels = [
-        FileChannelMcp(
-            file_path=Path("debug_messages.txt"),
-            name="DebugChannel",
-            type="debug",
-            identifier="test",
-            sleep_seconds=1.0,
-        ),
-    ]
-    agent = Agent(
-        triage_llm=triage_llm,
-        capable_llm=capable_llm,
-        context=context,
-        channels=channels,
-        agent_name="demo_agent",
-    )
-    await agent.heartbeat()
+    from pulsenode.agent.loader import AgentLoader
+
+    base_dir = Path.home() / ".pulsenode"
+    loader = AgentLoader(base_dir, settings)
+    agents = await loader.load_all_agents()
+
+    if not agents:
+        logger.warning("no_agents_loaded_exiting")
+        return
+
+    logger.info("starting_agents", count=len(agents))
+
+    await asyncio.gather(*[agent.heartbeat() for agent in agents])
 
 
 if __name__ == "__main__":

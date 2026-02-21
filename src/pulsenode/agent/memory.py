@@ -17,6 +17,7 @@ from pulsenode.agent.sessions import (
     TimeGranularity,
     SessionMode,
 )
+from pulsenode.agent.agent_config import AgentConfigManager
 
 logger = get_logger(__name__)
 
@@ -24,9 +25,12 @@ logger = get_logger(__name__)
 class MemoryManager:
     """High-level memory management for agents."""
 
-    def __init__(self, session_manager: SessionManager):
-        """Initialize memory manager with session manager."""
+    def __init__(
+        self, session_manager: SessionManager, config_manager: AgentConfigManager
+    ):
+        """Initialize memory manager with session manager and config manager."""
         self.session_manager = session_manager
+        self.config_manager = config_manager
 
     async def get_context_for_llm(
         self,
@@ -175,17 +179,15 @@ class MemoryManager:
 
     async def _get_session_config(self, session: Session) -> SessionConfig:
         """Get session configuration for a session."""
-        agent = self.session_manager.agents.get(session.agent_name)
-        if not agent:
-            return SessionConfig()  # Default
+        agent_config = await self.config_manager.load_agent_config(session.agent_name)
+        session_config = agent_config.session_config
 
         channel_id = f"{session.channel_type}:{session.channel_identifier}"
-        channel_config = agent.channels.get(channel_id)
+        for ch in agent_config.channels:
+            if f"{ch.type}:{ch.identifier}" == channel_id:
+                return session_config
 
-        if channel_config:
-            return channel_config.session_config
-
-        return agent.config
+        return session_config
 
     async def archive_and_create_new_session(
         self, session: Session, summary: str = "", topics: list[str] | None = None

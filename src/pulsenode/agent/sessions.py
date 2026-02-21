@@ -113,31 +113,6 @@ class SessionIndexEntry:
     file_size_kb: int
 
 
-@dataclass
-class Agent:
-    """Represents an agent with its memory and channels."""
-
-    name: str
-    purpose: str = ""
-    agent_memory_path: Path | None = None
-    config: SessionConfig = field(default_factory=SessionConfig)
-    channels: dict[str, ChannelConfig] = field(default_factory=dict)
-
-    def add_channel(
-        self,
-        channel_type: str,
-        channel_identifier: str,
-        session_config: SessionConfig | None = None,
-    ) -> None:
-        """Add a channel to this agent."""
-        channel_id = f"{channel_type}:{channel_identifier}"
-        self.channels[channel_id] = ChannelConfig(
-            channel_type=channel_type,
-            channel_identifier=channel_identifier,
-            session_config=session_config or self.config,
-        )
-
-
 class SessionManager:
     """Manages sessions, memory, and file system operations."""
 
@@ -145,7 +120,9 @@ class SessionManager:
         """Initialize session manager with base directory."""
         self.base_dir: Path = Path(base_dir)
         self.sessions: dict[str, Session] = {}  # session_id -> Session
-        self.agents: dict[str, Agent] = {}  # agent_name -> Agent
+        self._agent_memory_paths: dict[
+            str, Path
+        ] = {}  # agent_name -> agent_memory_path
 
     def _get_agent_dir(self, agent_name: str) -> Path:
         """Get the directory for an agent."""
@@ -171,37 +148,20 @@ class SessionManager:
         )
         return channel_dir / "sessions"
 
-    async def load_agent(self, agent_name: str) -> Agent:
-        """Load or create an agent."""
-        if agent_name in self.agents:
-            return self.agents[agent_name]
+    def _ensure_agent_dir(self, agent_name: str) -> Path:
+        """Ensure agent directory exists and return the agent memory path."""
+        if agent_name in self._agent_memory_paths:
+            return self._agent_memory_paths[agent_name]
 
         agent_dir = self._get_agent_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load agent config
-        config_file = agent_dir / "config.yaml"
-        purpose_file = agent_dir / "purpose.md"
         agent_memory_file = agent_dir / "agent_memory.md"
-
-        agent = Agent(name=agent_name, agent_memory_path=agent_memory_file)
-
-        # Load purpose
-        if purpose_file.exists():
-            agent.purpose = purpose_file.read_text().strip()
-
-        # Load config (simplified - in real implementation use yaml parser)
-        if config_file.exists():
-            # TODO: For now, use defaults - will implement proper YAML loading later
-            pass
-
-        self.agents[agent_name] = agent
-
-        # Ensure agent memory file exists
         if not agent_memory_file.exists():
             agent_memory_file.write_text(f"# {agent_name} Agent Memory\n\n")
 
-        return agent
+        self._agent_memory_paths[agent_name] = agent_memory_file
+        return agent_memory_file
 
     async def get_or_create_session(
         self,
@@ -211,8 +171,8 @@ class SessionManager:
         thread_id: str | None = None,
     ) -> Session:
         """Get existing session or create new one."""
-        # Load/create agent
-        await self.load_agent(agent_name)
+        # Ensure agent directory exists
+        self._ensure_agent_dir(agent_name)
 
         # Generate session ID
         if thread_id:
@@ -468,25 +428,24 @@ class SessionManager:
         self, agent_name: str, fact: str, importance: int = 3
     ) -> None:
         """Update agent memory with a new fact."""
-        agent = await self.load_agent(agent_name)
+        agent_memory_path = self._ensure_agent_dir(agent_name)
 
-        if not agent.agent_memory_path or not agent.agent_memory_path.exists():
+        if not agent_memory_path.exists():
             return
 
-        content = agent.agent_memory_path.read_text()
+        content = agent_memory_path.read_text()
 
-        # Add fact with importance
         importance_stars = "★" * importance
         new_fact = f"\n- [{importance_stars}] {fact}"
 
-        agent.agent_memory_path.write_text(content + new_fact)
+        agent_memory_path.write_text(content + new_fact)
 
     async def get_agent_memory(self, agent_name: str) -> str:
         """Get agent memory content."""
-        agent = await self.load_agent(agent_name)
+        agent_memory_path = self._ensure_agent_dir(agent_name)
 
-        if agent.agent_memory_path and agent.agent_memory_path.exists():
-            return agent.agent_memory_path.read_text()
+        if agent_memory_path.exists():
+            return agent_memory_path.read_text()
 
         return ""
 
